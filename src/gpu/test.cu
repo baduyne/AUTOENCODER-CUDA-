@@ -19,12 +19,20 @@
 // ============================================================================
 // Forward Pass Kernels
 // ============================================================================
+// Index helper for NCHW layout
+__host__ __device__ inline int idx4(int n, int c, int h, int w, int C, int H, int W) {
+    return ((n * C + c) * H + h) * W + w;
+}
+
+// ============================================================================
+// Forward Pass Kernels (giữ nguyên tên hàm)
+// ============================================================================
 
 __global__ void conv2d_forward_kernel(
-    const float* input,
-    const float* weights,
-    const float* bias,
-    float* output,
+    const float* __restrict__ input,
+    const float* __restrict__ weights,
+    const float* __restrict__ bias,
+    float* __restrict__ output,
     int batch_size,
     int in_channels,
     int out_channels,
@@ -34,40 +42,37 @@ __global__ void conv2d_forward_kernel(
     // 3x3 convolution with padding=1, stride=1
     const int kernel_size = 3;
     const int pad = 1;
+    const int stride = 1;
 
-    // Calculate global thread position
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int total_outputs = batch_size * out_channels * height * width;
+    if (tid >= total_outputs) return;
 
-    if (idx >= total_outputs) return;
+    // Decode indices: (n, oc, oh, ow)
+    int tmp = tid;
+    int ow = tmp % width;          tmp /= width;
+    int oh = tmp % height;         tmp /= height;
+    int oc = tmp % out_channels;   tmp /= out_channels;
+    int n  = tmp;
 
-    // Decompose linear index into (b, oc, h, w)
-    int w = idx % width;
-    int h = (idx / width) % height;
-    int oc = (idx / (width * height)) % out_channels;
-    int b = idx / (width * height * out_channels);
+    float acc = 0.0f;
 
-    float sum = bias[oc];
-
-    for (int ic = 0; ic < in_channels; ic++) {
-        for (int kh = 0; kh < kernel_size; kh++) {
-            for (int kw = 0; kw < kernel_size; kw++) {
-                int ih = h + kh - pad;
-                int iw = w + kw - pad;
-
-                if (ih >= 0 && ih < height && iw >= 0 && iw < width) {
-                    int input_idx = b * (in_channels * height * width) +
-                                    ic * (height * width) + ih * width + iw;
-                    int weight_idx = oc * (in_channels * kernel_size * kernel_size) +
-                                     ic * (kernel_size * kernel_size) +
-                                     kh * kernel_size + kw;
-                    sum += input[input_idx] * weights[weight_idx];
+    for (int ic = 0; ic < in_channels; ++ic) {
+        for (int ky = 0; ky < kernel_size; ++ky) {
+            for (int kx = 0; kx < kernel_size; ++kx) {
+                int iy = oh * stride + ky - pad;
+                int ix = ow * stride + kx - pad;
+                if (iy >= 0 && iy < height && ix >= 0 && ix < width) {
+                    int in_idx = idx4(n, ic, iy, ix, in_channels, height, width);
+                    int w_idx  = ((oc * in_channels + ic) * kernel_size + ky) * kernel_size + kx;
+                    acc += input[in_idx] * weights[w_idx];
                 }
             }
         }
     }
 
-    output[idx] = sum;
+    int out_idx = idx4(n, oc, oh, ow, out_channels, height, width);
+    output[out_idx] = acc + bias[oc];  // add bias ngay tại đây
 }
 
 void gpu_conv2d_forward(
@@ -85,10 +90,11 @@ void gpu_conv2d_forward(
     CUDA_CHECK(cudaGetLastError());
 }
 
-__global__ void relu_forward_kernel(float* data, int size) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size) {
-        data[idx] = (data[idx] > 0.0f) ? data[idx] : 0.0f;
+__global__ void relu_forward_kernel(float* __restrict__ data, int size) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid < size) {
+        float v = data[tid];
+        data[tid] = v > 0.0f ? v : 0.0f;
     }
 }
 
@@ -100,42 +106,46 @@ void gpu_relu_forward(float* d_data, int size) {
 }
 
 __global__ void maxpool2d_forward_kernel(
-    const float* input,
-    float* output,
+    const float* __restrict__ input,
+    float* __restrict__ output,
     int batch_size,
     int channels,
     int in_height,
     int in_width
 ) {
     const int pool_size = 2;
+    const int stride = 2;
     int out_height = in_height / 2;
-    int out_width = in_width / 2;
+    int out_width  = in_width / 2;
 
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total_outputs = batch_size * channels * out_height * out_width;
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = batch_size * channels * out_height * out_width;
+    if (tid >= total) return;
 
-    if (idx >= total_outputs) return;
+    int tmp = tid;
+    int ow = tmp % out_width;  tmp /= out_width;
+    int oh = tmp % out_height; tmp /= out_height;
+    int c  = tmp % channels;   tmp /= channels;
+    int n  = tmp;
 
-    // Decompose linear index into (b, c, h, w)
-    int w = idx % out_width;
-    int h = (idx / out_width) % out_height;
-    int c = (idx / (out_width * out_height)) % channels;
-    int b = idx / (out_width * out_height * channels);
+    float best = -1e38f;
+    int base_y = oh * stride;
+    int base_x = ow * stride;
 
-    float max_val = -1e38f;
-
-    for (int ph = 0; ph < pool_size; ph++) {
-        for (int pw = 0; pw < pool_size; pw++) {
-            int ih = h * pool_size + ph;
-            int iw = w * pool_size + pw;
-            int input_idx = b * (channels * in_height * in_width) +
-                            c * (in_height * in_width) + ih * in_width + iw;
-            float val = input[input_idx];
-            if (val > max_val) max_val = val;
+    for (int dy = 0; dy < pool_size; ++dy) {
+        for (int dx = 0; dx < pool_size; ++dx) {
+            int y = base_y + dy;
+            int x = base_x + dx;
+            if (y < in_height && x < in_width) {
+                int idx = idx4(n, c, y, x, channels, in_height, in_width);
+                float v = input[idx];
+                if (v > best) best = v;
+            }
         }
     }
 
-    output[idx] = max_val;
+    int out_idx = idx4(n, c, oh, ow, channels, out_height, out_width);
+    output[out_idx] = best;
 }
 
 void gpu_maxpool2d_forward(
@@ -154,35 +164,32 @@ void gpu_maxpool2d_forward(
 }
 
 __global__ void upsample2d_forward_kernel(
-    const float* input,
-    float* output,
+    const float* __restrict__ input,
+    float* __restrict__ output,
     int batch_size,
     int channels,
     int in_height,
     int in_width
 ) {
     int out_height = in_height * 2;
-    int out_width = in_width * 2;
+    int out_width  = in_width * 2;
 
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total_outputs = batch_size * channels * out_height * out_width;
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = batch_size * channels * out_height * out_width;
+    if (tid >= total) return;
 
-    if (idx >= total_outputs) return;
+    int tmp = tid;
+    int ow = tmp % out_width;  tmp /= out_width;
+    int oh = tmp % out_height; tmp /= out_height;
+    int c  = tmp % channels;   tmp /= channels;
+    int n  = tmp;
 
-    // Decompose linear index into (b, c, h, w)
-    int w = idx % out_width;
-    int h = (idx / out_width) % out_height;
-    int c = (idx / (out_width * out_height)) % channels;
-    int b = idx / (out_width * out_height * channels);
+    int ih = oh / 2;
+    int iw = ow / 2;
 
-    // Nearest neighbor: map output coord to input coord
-    int ih = h / 2;
-    int iw = w / 2;
-
-    int input_idx = b * (channels * in_height * in_width) +
-                    c * (in_height * in_width) + ih * in_width + iw;
-
-    output[idx] = input[input_idx];
+    int in_idx = idx4(n, c, ih, iw, channels, in_height, in_width);
+    int out_idx = idx4(n, c, oh, ow, channels, out_height, out_width);
+    output[out_idx] = input[in_idx];
 }
 
 void gpu_upsample2d_forward(
@@ -201,13 +208,13 @@ void gpu_upsample2d_forward(
 }
 
 // ============================================================================
-// Backward Pass Kernels
+// Backward Pass Kernels (giữ nguyên tên hàm gốc)
 // ============================================================================
 
 __global__ void conv2d_backward_input_kernel(
-    const float* weights,
-    const float* dL_doutput,
-    float* dL_dinput,
+    const float* __restrict__ weights,
+    const float* __restrict__ dL_doutput,
+    float* __restrict__ dL_dinput,
     int batch_size,
     int in_channels,
     int out_channels,
@@ -216,47 +223,45 @@ __global__ void conv2d_backward_input_kernel(
 ) {
     const int kernel_size = 3;
     const int pad = 1;
+    const int stride = 1;
 
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total_inputs = batch_size * in_channels * height * width;
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = batch_size * in_channels * height * width;
+    if (tid >= total) return;
 
-    if (idx >= total_inputs) return;
+    int tmp = tid;
+    int iw = tmp % width;     tmp /= width;
+    int ih = tmp % height;    tmp /= height;
+    int ic = tmp % in_channels; tmp /= in_channels;
+    int n  = tmp;
 
-    // Decompose linear index into (b, ic, ih, iw)
-    int iw = idx % width;
-    int ih = (idx / width) % height;
-    int ic = (idx / (width * height)) % in_channels;
-    int b = idx / (width * height * in_channels);
+    float acc = 0.0f;
 
-    float sum = 0.0f;
-
-    // For each output channel and kernel position that affects this input
-    for (int oc = 0; oc < out_channels; oc++) {
-        for (int kh = 0; kh < kernel_size; kh++) {
-            for (int kw = 0; kw < kernel_size; kw++) {
-                // Output position that used this input with this kernel position
-                int oh = ih - kh + pad;
-                int ow = iw - kw + pad;
-
-                if (oh >= 0 && oh < height && ow >= 0 && ow < width) {
-                    int output_idx = b * (out_channels * height * width) +
-                                     oc * (height * width) + oh * width + ow;
-                    int weight_idx = oc * (in_channels * kernel_size * kernel_size) +
-                                     ic * (kernel_size * kernel_size) +
-                                     kh * kernel_size + kw;
-                    sum += dL_doutput[output_idx] * weights[weight_idx];
+    for (int oc = 0; oc < out_channels; ++oc) {
+        for (int ky = 0; ky < kernel_size; ++ky) {
+            for (int kx = 0; kx < kernel_size; ++kx) {
+                int oh = ih + pad - ky;
+                int ow = iw + pad - kx;
+                if (oh % stride == 0 && ow % stride == 0) {
+                    oh /= stride;
+                    ow /= stride;
+                    if (oh >= 0 && oh < height && ow >= 0 && ow < width) {
+                        int dout_idx = idx4(n, oc, oh, ow, out_channels, height, width);
+                        int w_idx    = ((oc * in_channels + ic) * kernel_size + ky) * kernel_size + kx;
+                        acc += dL_doutput[dout_idx] * weights[w_idx];
+                    }
                 }
             }
         }
     }
 
-    dL_dinput[idx] = sum;
+    dL_dinput[tid] = acc;
 }
 
 __global__ void conv2d_backward_weights_kernel(
-    const float* input,
-    const float* dL_doutput,
-    float* dL_dweights,
+    const float* __restrict__ input,
+    const float* __restrict__ dL_doutput,
+    float* __restrict__ dL_dweights,
     int batch_size,
     int in_channels,
     int out_channels,
@@ -265,65 +270,59 @@ __global__ void conv2d_backward_weights_kernel(
 ) {
     const int kernel_size = 3;
     const int pad = 1;
+    const int stride = 1;
 
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int total_weights = out_channels * in_channels * kernel_size * kernel_size;
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = out_channels * in_channels * kernel_size * kernel_size;
+    if (tid >= total) return;
 
-    if (idx >= total_weights) return;
+    int tmp = tid;
+    int kx = tmp % kernel_size; tmp /= kernel_size;
+    int ky = tmp % kernel_size; tmp /= kernel_size;
+    int ic = tmp % in_channels; tmp /= in_channels;
+    int oc = tmp;
 
-    // Decompose linear index into (oc, ic, kh, kw)
-    int kw = idx % kernel_size;
-    int kh = (idx / kernel_size) % kernel_size;
-    int ic = (idx / (kernel_size * kernel_size)) % in_channels;
-    int oc = idx / (kernel_size * kernel_size * in_channels);
+    float acc = 0.0f;
 
-    float sum = 0.0f;
-
-    for (int b = 0; b < batch_size; b++) {
-        for (int oh = 0; oh < height; oh++) {
-            for (int ow = 0; ow < width; ow++) {
-                int ih = oh + kh - pad;
-                int iw = ow + kw - pad;
-
-                if (ih >= 0 && ih < height && iw >= 0 && iw < width) {
-                    int input_idx = b * (in_channels * height * width) +
-                                    ic * (height * width) + ih * width + iw;
-                    int output_idx = b * (out_channels * height * width) +
-                                     oc * (height * width) + oh * width + ow;
-                    sum += input[input_idx] * dL_doutput[output_idx];
+    for (int n = 0; n < batch_size; ++n) {
+        for (int oh = 0; oh < height; ++oh) {
+            for (int ow = 0; ow < width; ++ow) {
+                int iy = oh * stride + ky - pad;
+                int ix = ow * stride + kx - pad;
+                if (iy >= 0 && iy < height && ix >= 0 && ix < width) {
+                    int in_idx   = idx4(n, ic, iy, ix, in_channels, height, width);
+                    int dout_idx = idx4(n, oc, oh, ow, out_channels, height, width);
+                    acc += input[in_idx] * dL_doutput[dout_idx];
                 }
             }
         }
     }
 
-    dL_dweights[idx] = sum;
+    int w_idx = ((oc * in_channels + ic) * kernel_size + ky) * kernel_size + kx;
+    dL_dweights[w_idx] = acc;
 }
 
 __global__ void conv2d_backward_bias_kernel(
-    const float* dL_doutput,
-    float* dL_dbias,
+    const float* __restrict__ dL_doutput,
+    float* __restrict__ dL_dbias,
     int batch_size,
     int out_channels,
     int height,
     int width
 ) {
     int oc = blockIdx.x * blockDim.x + threadIdx.x;
-
     if (oc >= out_channels) return;
 
-    float sum = 0.0f;
-
-    for (int b = 0; b < batch_size; b++) {
-        for (int h = 0; h < height; h++) {
-            for (int w = 0; w < width; w++) {
-                int idx = b * (out_channels * height * width) +
-                          oc * (height * width) + h * width + w;
-                sum += dL_doutput[idx];
+    float acc = 0.0f;
+    for (int n = 0; n < batch_size; ++n) {
+        for (int h = 0; h < height; ++h) {
+            for (int w = 0; w < width; ++w) {
+                int idx = idx4(n, oc, h, w, out_channels, height, width);
+                acc += dL_doutput[idx];
             }
         }
     }
-
-    dL_dbias[oc] = sum;
+    dL_dbias[oc] = acc;
 }
 
 void gpu_conv2d_backward(
@@ -688,8 +687,8 @@ private:
 
     // Device activation pointers
     float *d_input, *d_target;
-    float *d_act1, *d_pool1, *d_act2, *d_act3; // act3 là latent
-    float *d_conv3_out, *d_up1, *d_act4, *d_up2, *d_act5; // act5 là output
+    float *d_act1, *d_pool1, *d_act2, *d_act3; 
+    float *d_conv3_out, *d_up1, *d_act4, *d_up2, *d_act5;
 
     // Device gradient buffers
     float *d_dL_dact5, *d_dL_dup2, *d_dL_dact4, *d_dL_dup1;
@@ -711,7 +710,6 @@ private:
     void extract_features_device(const float* d_in, float* d_features, int batch_size);
 };
 
-// Triển khai class...
 
 GPUAutoencoder::GPUAutoencoder() {
     // Host pointers
@@ -1246,7 +1244,7 @@ int main() {
             "../../data/cifar-100-binary/cifar-100-binary/train.bin",
             train_images,
             train_labels,
-            50000))
+            5000))
     {
         printf("Load data failed! Check file path.\n");
         return 1;
