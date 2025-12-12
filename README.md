@@ -25,4 +25,4 @@ sudo apt-get -y install cudnn9-cuda-12
 ## Data
 
 ## Run file
-nvcc main.cu utils.cpp -o main
+nvcc ./main.cu  ./gpu_autoencoder.cu ./utils.cpp  -o main

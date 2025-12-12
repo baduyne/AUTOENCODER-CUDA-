@@ -20,6 +20,9 @@ bool load_cifar10_images(const std::string &file_name,
 
     for (int i = 0; i < num_imgs; i++)
     {
+        uint8_t coarse_label;
+        file.read((char*)&coarse_label, 1);
+
         uint8_t label;
         file.read((char*)&label, 1);
 
