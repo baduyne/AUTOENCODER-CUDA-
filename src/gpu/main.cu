@@ -30,9 +30,6 @@ constexpr int LAT_W = 8;
 constexpr int LAT_H = 8;
 constexpr int LAT_C = 128; // equals ENC2_OUT
 
-// Batch settings
-int BATCH = 64; // can be changed at runtime
-
 // Utility: random initialization for weight 
 float randn(float mean=0.0f, float std=0.05f) {
     static std::mt19937 rng(12345);
@@ -162,15 +159,53 @@ __global__ void upsample2x(const float* __restrict__ input, int N, int C, int in
 }
 
 // MSE loss kernel: each thread accumulates per-element squared error into a global accumulator using atomicAdd.
-__global__ void mse_loss_and_grad(const float* __restrict__ output, const float* __restrict__ target,
-                                  int total, float* __restrict__ loss_accum, float* __restrict__ grad)
-{
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= total) return;
-    float diff = output[tid] - target[tid];
-    atomicAdd(loss_accum, diff * diff);
-    grad[tid] = 2.0f * diff; // gradient wrt output
+__global__ void mse_loss_gradient_kernel(
+    const float* output,
+    const float* target,
+    float* dL_doutput,
+    int size
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        dL_doutput[idx] = 2.0f * (output[idx] - target[idx]) / size;
+    }
 }
+
+__global__ void mse_loss_kernel(
+    const float* output,
+    const float* target,
+    float* partial_sums,
+    int size
+) {
+    extern __shared__ float sdata[];
+
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // Load and compute squared difference
+    float val = 0.0f;
+    if (idx < size) {
+        float diff = output[idx] - target[idx];
+        val = diff * diff;
+    }
+    sdata[tid] = val;
+    __syncthreads();
+
+    // Reduction in shared memory
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        __syncthreads();
+    }
+
+    // Write block result to global memory
+    if (tid == 0) {
+        partial_sums[blockIdx.x] = sdata[0];
+    }
+}
+
+
 __global__ void relu_backward(const float* __restrict__ out,
                               const float* __restrict__ dOut,
                               float* __restrict__ dIn,
@@ -219,8 +254,8 @@ __global__ void maxpool2x2_backward(
 
 
 __global__ void upsample2x_backward(
-    const float* __restrict__ dOut, // gradient after upsample
-    float* __restrict__ dIn,        // gradient before upsample
+    const float* __restrict__ dOut,
+    float* __restrict__ dIn,        
     int N, int C, int inH, int inW)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -304,6 +339,12 @@ __global__ void conv2d_grad_input_naive(
 // Zero array
 __global__ void zero_kernel(float* ptr, int n) { int tid = blockIdx.x * blockDim.x + threadIdx.x; if (tid < n) ptr[tid]=0.0f; }
 
+inline void gpu_zero(float* ptr, int n) {
+    int block = 256;
+    int grid = (n + block - 1) / block;
+    zero_kernel<<<grid, block>>>(ptr, n);
+}
+
 // Compute gradient w.r.t conv filters naively
 // For each filter element (oc, ic, ky, kx) we accumulate over batch and spatial positions
 __global__ void conv2d_grad_filters_naive(const float* __restrict__ input, const float* __restrict__ dOut,
@@ -354,23 +395,6 @@ __global__ void conv2d_grad_bias_naive(const float* __restrict__ dOut, int N, in
     gradBias[oc] = acc;
 }
 
-__global__ void conv2d_grad_bias(
-    const float* __restrict__ dOut,
-    float* __restrict__ dB,
-    int N, int C, int H, int W)
-{
-    int oc = blockIdx.x;
-    float acc = 0.f;
-
-    for (int n = 0; n < N; n++)
-        for (int h = 0; h < H; h++)
-            for (int w = 0; w < W; w++)
-            {
-                int idx = ((n*C + oc) * H + h) * W + w;
-                acc += dOut[idx];
-            }
-    atomicAdd(&dB[oc], acc);
-}
 
 
 __global__ void update_weights_kernel(
@@ -415,13 +439,146 @@ void update_weights(
 }
 
 
-// Update parameters: w -= lr * grad
-__global__ void sgd_update(float* __restrict__ params, const float* __restrict__ grads, int n, float lr)
-{
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= n) return;
-    params[tid] -= lr * grads[tid];
+void gpu_conv2d_backward(
+    const float* d_input,         // x
+    const float* d_weights,       // W
+    const float* d_dL_doutput,    // dY
+    float* d_dL_dinput,           // dX
+    float* d_dL_dweights,         // dW
+    float* d_dL_dbias,            // dB
+    int batch_size,
+    int inC,
+    int outC,
+    int H,
+    int W
+) {
+    const int K = 3;
+    const int pad = 1;
+    const int stride = 1;
+
+    int block = 256;
+
+    // 1. grad W
+    {
+        int total = outC * inC * K * K;
+        int grid = (total + block - 1) / block;
+
+        conv2d_grad_filters_naive<<<grid, block>>>(
+            d_input,
+            d_dL_doutput,
+            batch_size,
+            inC, H, W,
+            outC, H, W,
+            K, pad, stride,
+            d_dL_dweights
+        );
+    }
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // 2. grad B
+    {
+        int grid = (outC + block - 1) / block;
+        conv2d_grad_bias_naive<<<grid, block>>>(
+            d_dL_doutput,
+            batch_size,
+            outC,
+            H, W,
+            d_dL_dbias
+        );
+    }
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // 3. grad Input
+    {
+        int total = batch_size * inC * H * W;
+        int grid = (total + block - 1) / block;
+
+        conv2d_grad_input_naive<<<grid, block>>>(
+            d_dL_doutput,
+            d_weights,
+            d_dL_dinput,
+            batch_size,
+            inC, H, W,
+            outC, H, W,
+            K, pad, stride
+        );
+    }
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
+
+void gpu_relu_backward(
+    const float* d_output,        // output before ReLU (for mask)
+    const float* d_dL_doutput,    // gradient from next layer
+    float* d_dL_dinput,           // gradient to pass down
+    int size
+) {
+    int block = 256;
+    int grid = (size + block - 1) / block;
+
+    relu_backward<<<grid, block>>>(
+        d_output,
+        d_dL_doutput,
+        d_dL_dinput,
+        size
+    );
+    CUDA_CHECK(cudaGetLastError());
+}
+
+
+void gpu_maxpool2d_backward(
+    const float* d_input,
+    const float* d_output,
+    const float* d_dL_doutput,
+    float* d_dL_dinput,
+    int batch_size,
+    int C,
+    int inH,
+    int inW
+) {
+    int outH = inH / 2;
+    int outW = inW / 2;
+
+    // zero grad
+    gpu_zero(d_dL_dinput, batch_size * C * inH * inW);
+
+    int block = 256;
+    int total = batch_size * C * outH * outW;
+    int grid = (total + block - 1) / block;
+
+    maxpool2x2_backward<<<grid, block>>>(
+        d_input,
+        d_output,
+        d_dL_doutput,
+        d_dL_dinput,
+        batch_size, C,
+        inH, inW,
+        outH, outW
+    );
+    CUDA_CHECK(cudaGetLastError());
+}
+
+
+void gpu_upsample2d_backward(
+    const float* d_dL_doutput,
+    float* d_dL_dinput,
+    int batch_size,
+    int C,
+    int inH,
+    int inW
+) {
+    int block = 256;
+    int total = batch_size * C * inH * inW;
+    int grid = (total + block - 1) / block;
+
+    upsample2x_backward<<<grid, block>>>(
+        d_dL_doutput,
+        d_dL_dinput,
+        batch_size, C,
+        inH, inW
+    );
+    CUDA_CHECK(cudaGetLastError());
+}
+
 
 // GPUAutoencoder class: manages allocations and forward/backward pipelines
 struct GPUAutoencoder {
@@ -486,7 +643,6 @@ struct GPUAutoencoder {
     int batch_size;
 
     GPUAutoencoder(int batch_ = 64) : batch_size(batch_) {
-        BATCH = batch_;
         allocate();
         init_params();
     }
@@ -682,233 +838,193 @@ struct GPUAutoencoder {
         CUDA_CHECK(cudaDeviceSynchronize());
     }
 
-    // Backward (naive): compute gradients for final conv only (as example), and update all conv params via SGD with those grads zeroed except final for demonstration.
-    // NOTE: Full backward for all layers is long; this implementation computes grads for final conv filters and bias and demonstrates update.
     void backward_and_update_full(float lr, float &h_loss)
     {
 
-        // ------------------------------------------------------
-        // 0. Compute dL/dOut from MSE  (out - target)
-        // ------------------------------------------------------
-        int total_out = batch_size * IMG_C * IMG_H * IMG_W;
+        int B = batch_size;
+
+        int total_size = batch_size * 3 * 32 * 32;
         int threads = 256;
-        const int block = threads;
-        int blocks = (total_out + threads -1)/threads;
-        // For demonstration, use target = input (autoencoder)
-        mse_loss_and_grad<<<blocks,threads>>>(d_out, d_input, total_out, d_loss_accum, d_out_grad);
-        CUDA_CHECK(cudaDeviceSynchronize());
+        int blocks = (total_size + threads - 1) / threads;
 
-        // copy loss to host
-        CUDA_CHECK(cudaMemcpy(&h_loss, d_loss_accum, sizeof(float), cudaMemcpyDeviceToHost));
-        h_loss /= (float)total_out; // mean
-        // printf("MSE loss (batch average): %f\n", h_loss);
-
-        // ------------------------------------------------------
-        // BACKPROP
-        // ------------------------------------------------------
-        // From: conv_out → up2 → dec2 → up1 → dec1 → p2 → e2 → p1 → e1 → input
-        // ------------------------------------------------------
-
-        // ======================================================
-        // 1. conv_out backward
-        // ======================================================
-
-        // dW_out
-        conv2d_grad_filters_naive<<< dim3(3, 256), dim3(3, 3) >>>(
-            d_up2,          // input
-            d_d_out,        // dOut
-            batch_size,              // batch
-            256, 32, 32,    // input C, H, W
-            3, 32, 32,      // output C, H, W
-            3, 1, 1,        // kernel 3×3, pad=1, stride=1
-            d_dw_out       // dW
-        );
-
-        // dB_out
-        conv2d_grad_bias<<< 3, 1 >>>(
+        // ---- (1) Compute dL/dOutput ----
+        mse_loss_gradient_kernel<<<blocks, threads>>>(
+            d_out,
+            d_input,        // autoencoder target = input
             d_d_out,
-            d_db_out,
-            batch_size, 3, 32, 32
+            total_size
+        );
+        cudaDeviceSynchronize();
+
+        // ---- (2) Compute partial sums ----
+        float* d_partial;
+        cudaMalloc(&d_partial, blocks * sizeof(float));
+
+        mse_loss_kernel<<<blocks, threads, threads * sizeof(float)>>>(
+            d_out,
+            d_input,
+            d_partial,
+            total_size
+        );
+        cudaDeviceSynchronize();
+
+        // ---- (3) Copy partial sums to CPU ----
+        std::vector<float> h_partial(blocks);
+        cudaMemcpy(h_partial.data(), d_partial, blocks * sizeof(float), cudaMemcpyDeviceToHost);
+        cudaFree(d_partial);
+
+        // ---- (4) Final loss = sum(par    tials) / N ----
+        double loss_sum = 0.0;
+        for (float v : h_partial) loss_sum += v;
+
+        h_loss = loss_sum / total_size;
+
+
+        // ===============================================================
+        // 1. Last Conv (OUT layer): Conv2D(256→3)
+        // ===============================================================
+        gpu_conv2d_backward(
+            d_up2,          // input to this conv
+            d_w_out,
+            d_out_grad,     // dL/dOut
+            d_d_up2,        // dL/d(up2)
+            d_dw_out,       // dW
+            d_db_out,       // dB
+            B, 256, 3, 32, 32
         );
 
 
-        int total_up2 = batch_size * 256 * 16 * 16;
-        int grid = (total_up2 + block - 1) / block;
-        conv2d_grad_input_naive<<< grid, block >>>(
-            d_d_out, d_w_out, d_d_up2,
-            batch_size,
-            256, 32, 32,
-            3, 32, 32,
-            3, 1, 1
+        // ===============================================================
+        // 2. UpSample2D (16→32)
+        // ===============================================================
+        gpu_upsample2d_backward(
+            d_d_up2,   // from above
+            d_d_dec2,  // grad to dec2
+            B, 256, 16, 16
         );
 
-        // ======================================================
-        // 2. up2 backward → grad for dec2
-        // ======================================================
-        int grid_up2 = (batch_size * 256 * 16 * 16 + block - 1) / block;
 
-        upsample2x_backward<<<grid_up2, block>>>(
-            d_d_up2,
-            d_d_dec2,
-            batch_size, 256, 16, 16
+        // ===============================================================
+        // 3. Decoder Conv2 (Conv2D 128→256 + ReLU)
+        // ===============================================================
+        // First ReLU backward
+        gpu_relu_backward(
+            d_dec2,      // pre-ReLU activation
+            d_d_dec2,    // incoming grad
+            d_d_dec2,    // outgoing grad
+            B * 256 * 16 * 16
         );
 
-        // ======================================================
-        // 3. conv_d2 backward
-        // ======================================================
-
-        // dW_d2
-        conv2d_grad_filters_naive<<< dim3(256,128), dim3(3,3) >>>(
-            d_up1,          // input
-            d_d_dec2,       // dOut
-            batch_size,
-            128, 16, 16,
-            256, 16, 16,
-            3, 1, 1,
-            d_dw_d2
-        );
-
-        // dB_d2
-        conv2d_grad_bias<<< 256,1 >>>(
-            d_d_dec2,
+        // Then conv backward
+        gpu_conv2d_backward(
+            d_up1,      // input
+            d_w_d2,
+            d_d_dec2,   // dL/d(dec2)
+            d_d_up1,    // dL/d(up1)
+            d_dw_d2,
             d_db_d2,
-            batch_size,256,16,16
+            B, 128, 256, 16, 16
         );
 
-        // d(up1) = d(dec2)
-        conv2d_grad_input_naive<<< grid_up2, block >>>(
-            d_d_dec2, d_w_d2, d_d_up1,
-            batch_size,
-            128, 16, 16,
-            256, 16, 16,
-            3, 1, 1
-        );
 
-        // ======================================================
-        // 4. up1 backward → grad for dec1
-        // ======================================================
-        int total_up1 = batch_size * 128 * 8 * 8;
-        int grid_up1 = (total_up1 + block - 1) / block;
-
-        upsample2x_backward<<<grid_up1, block>>>(
+        // ===============================================================
+        // 4. UpSample2D (8→16)
+        // ===============================================================
+        gpu_upsample2d_backward(
             d_d_up1,
             d_d_dec1,
-            batch_size, 128, 8, 8
+            B, 128, 8, 8
         );
 
-        // ======================================================
-        // 5. conv_d1 backward
-        // ======================================================
 
-        // dW_d1
-        conv2d_grad_filters_naive<<< dim3(128,128), dim3(3,3) >>>(
+        // ===============================================================
+        // 5. Decoder Conv1: Conv(128→128) + ReLU
+        // ===============================================================
+        gpu_relu_backward(
+            d_dec1,
+            d_d_dec1,
+            d_d_dec1,
+            B * 128 * 8 * 8
+        );
+
+        gpu_conv2d_backward(
             d_p2,
+            d_w_d1,
             d_d_dec1,
-            batch_size,
-            128,8,8,
-            128,8,8,
-            3,1,1,
-            d_dw_d1
-        );
-
-        // dB_d1
-        conv2d_grad_bias<<<128,1>>>(
-            d_d_dec1,
+            d_d_p2,
+            d_dw_d1,
             d_db_d1,
-            batch_size,128,8,8
+            B, 128, 128, 8, 8
         );
 
-        // d(p2)
-        conv2d_grad_input_naive<<< grid_up1, block >>>(
-            d_d_dec1, d_w_d1, d_d_p2,
-            batch_size,
-            128,8,8,
-            128,8,8,
-            3,1,1
+
+        // ===============================================================
+        // 6. MaxPool2D Backward (from 8→16)
+        // ===============================================================
+        gpu_maxpool2d_backward(
+            d_e2,
+            d_p2,
+            d_d_p2,
+            d_d_e2,
+            B, 128, 16, 16
         );
 
-        // ======================================================
-        // 6. maxpool2 backward → grad for e2
-        // ======================================================
-        int total_p2 = batch_size * 128 * 16 * 16;
-        int grid_p2 = (total_p2 + block - 1) / block;
 
-        maxpool2x2_backward<<< grid_p2, block >>>(
-            d_e2, d_p2, d_d_p2, d_d_e2,
-            batch_size,128,16,16, 8, 8 
+        // ===============================================================
+        // 7. Encoder Conv2: Conv2D(256→128) + ReLU
+        // ===============================================================
+        gpu_relu_backward(
+            d_e2,
+            d_d_e2,
+            d_d_e2,
+            B * 128 * 16 * 16
         );
 
-        // ======================================================
-        // 7. conv_e2 backward
-        // ======================================================
-
-        // dW_e2
-        conv2d_grad_filters_naive<<< dim3(128,256), dim3(3,3) >>>(
+        gpu_conv2d_backward(
             d_p1,
+            d_w_e2,
             d_d_e2,
-            batch_size,
-            256,16,16,
-            128,16,16,
-            3,1,1,
-            d_dw_e2
-        );
-
-        // dB_e2
-        conv2d_grad_bias<<<128,1>>>(
-            d_d_e2,
+            d_d_p1,
+            d_dw_e2,
             d_db_e2,
-            batch_size,128,16,16
+            B, 256, 128, 16, 16
         );
 
-        // d(p1)
-        conv2d_grad_input_naive<<< grid_p2, block >>>(
-            d_d_e2, d_w_e2, d_d_p1,
-            batch_size,
-            256,16,16,
-            128,16,16,
-            3,1,1
+
+        // ===============================================================
+        // 8. MaxPool2D Backward (from 16→32)
+        // ===============================================================
+        gpu_maxpool2d_backward(
+            d_e1,
+            d_p1,
+            d_d_p1,
+            d_d_e1,
+            B, 256, 32, 32
         );
 
-        // ======================================================
-        // 8. maxpool1 backward → grad for e1
-        // ======================================================
-        int total_p1 = batch_size * 256 * 32 * 32;
-        int grid_p1 = (total_p1 + block - 1) / block;
 
-        maxpool2x2_backward<<< grid_p1, block >>>(
-            d_e1, d_p1, d_d_p1, d_d_e1,
-            batch_size,256,32,32, 16, 16
+        // ===============================================================
+        // 9. Encoder Conv1: Conv2D(3→256) + ReLU
+        // ===============================================================
+        gpu_relu_backward(
+            d_e1,
+            d_d_e1,
+            d_d_e1,
+            B * 256 * 32 * 32
         );
 
-        // ======================================================
-        // 9. conv_e1 backward
-        // ======================================================
-        // dW_e1
-        conv2d_grad_filters_naive<<< dim3(256,3), dim3(3,3) >>>(
+        gpu_conv2d_backward(
             d_input,
+            d_w_e1,
             d_d_e1,
-            batch_size,
-            3,32,32,
-            256,32,32,
-            3,1,1,
-            d_dw_e1
-        );
-
-        // dB_e1
-        conv2d_grad_bias<<<256,1>>>(
-            d_d_e1,
+            d_d_input,
+            d_dw_e1,
             d_db_e1,
-            batch_size,256,32,32
+            B, 3, 256, 32, 32
         );
 
-        // d(input)
-        conv2d_grad_input_naive<<< grid_p1, block >>>(
-            d_d_e1, d_w_e1, d_d_input,
-            batch_size,
-            3,32,32,
-            256,32,32,
-            3,1,1
-        );
+
+        CUDA_CHECK(cudaDeviceSynchronize());
 
         // ======================================================
         // UPDATE WEIGHTS
@@ -918,6 +1034,7 @@ struct GPUAutoencoder {
         update_weights(d_w_d1, d_b_d1, d_dw_d1, d_db_d1, lr, 128*128*3*3, 128);
         update_weights(d_w_d2, d_b_d2, d_dw_d2, d_db_d2, lr, 256*128*3*3, 256);
         update_weights(d_w_out, d_b_out, d_dw_out, d_db_out, lr, 3*256*3*3, 3);
+        CUDA_CHECK(cudaDeviceSynchronize());
     }
    
 
@@ -1054,6 +1171,25 @@ void fill_random_input(std::vector<float>& h, int batch) {
 }
 
 
+void save_images_to_binary(const std::vector<std::vector<float>> &images, const std::string &output_file_name) {
+    std::ofstream outfile(output_file_name, std::ios::binary | std::ios::out);
+
+    if (!outfile.is_open()) {
+        std::cerr << "Lỗi: Không thể mở file output " << output_file_name << std::endl;
+        return;
+    }
+    
+    // Ghi tuần tự từng ảnh
+    for (const auto& image : images) {
+        // Ghi toàn bộ dữ liệu float của một ảnh vào file
+        // image.data() trả về con trỏ đầu tiên, image.size() * sizeof(float) là tổng số byte
+        outfile.write((char*)image.data(), image.size() * sizeof(float));
+    }
+
+    outfile.close();
+    std::cout << "Đã lưu thành công " << images.size() << " ảnh (dạng float) tới " << output_file_name << std::endl;
+}
+
 
 int main() {
     int batch = 16;  // training batch size
@@ -1069,12 +1205,13 @@ int main() {
         "../../data/cifar-100-binary/cifar-100-binary/train.bin",
         train_images,
         train_labels,
-        50000))
+        1000))
     {
+        
         printf("Load data failed!\n");
         return 0;
     }
-
+    save_images_to_binary(train_images, "cifar10_raw_images.bin");
     printf("Loaded %zu training images.\n", train_images.size());
 
     // ---- TRAIN LOOP ----
@@ -1115,7 +1252,8 @@ int main() {
             net.forward();
             float h_loss = 0.0;
             net.backward_and_update_full(lr, h_loss);
-            epoch_loss +=h_loss;
+            // printf("Epoch %d loss: %f\n", e, h_loss);
+            epoch_loss += h_loss;
         }
         size_t num_batches = train_images.size() / batch;
         printf("Epoch %d loss: %f\n", e, epoch_loss / num_batches);
