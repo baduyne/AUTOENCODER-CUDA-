@@ -671,7 +671,7 @@ GPUAutoencoder::~GPUAutoencoder() {
 }
 
 void GPUAutoencoder::allocate_host_memory() {
-    if (host_enc_conv1_w) return; // Đã cấp phát
+    if (host_enc_conv1_w) return; 
 
     host_enc_conv1_w = new float[W1_SIZE];
     host_enc_conv1_b = new float[B1_SIZE];
@@ -841,7 +841,6 @@ void GPUAutoencoder::initialize() {
     allocate_host_memory();
 
     // Initialize weights using Xavier initialization
-    // Chú ý: Kích thước đầu vào/đầu ra cho Xavier là số kênh
     init_weights_xavier(host_enc_conv1_w, 3, 256);
     init_weights_xavier(host_enc_conv2_w, 256, 128);
     init_weights_xavier(host_dec_conv1_w, 128, 128);
@@ -898,7 +897,7 @@ void GPUAutoencoder::forward_device(const float* d_in, int batch_size) {
 }
 
 void GPUAutoencoder::forward(const float* h_input, float* h_output, int batch_size) {
-    // Ensure device memory is allocated
+    // Device memory is allocated
     allocate_device_memory(batch_size);
     
     // Copy input to device
@@ -1128,6 +1127,5 @@ void GPUAutoencoder::load_weights(const std::string& filepath) {
 
     printf("GPU Model weights loaded from: %s\n", filepath.c_str());
 }
-
 
 
