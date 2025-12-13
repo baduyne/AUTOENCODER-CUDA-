@@ -7,6 +7,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <cstdint>
 
 #define CUDA_CHECK(call) \
     do { \
@@ -26,7 +27,7 @@ void train_autoencoder(
     int epochs,
     float lr,
     int patience,
-    int log_step_interval = 30)
+    int log_step_interval = 50)
 {
     const size_t IMG_ELEM = IMG_C * IMG_H * IMG_W;
 
@@ -181,154 +182,55 @@ void train_autoencoder(
 
 
 
+// Extract features from in-memory vectors (keeps old behavior)
+void extract_features_dataset(
+    GPUAutoencoder& gpu_model,
+    const std::vector<std::vector<float>>& train_images,
+    const std::vector<std::vector<float>>& test_images,
+    int batch_size,
+    std::vector<float>& train_features_out,
+    std::vector<float>& test_features_out)
+{
+    const int IMG_SIZE = IMG_C * IMG_H * IMG_W;
+    const int FEAT_SIZE = 128 * 8 * 8;
+    const size_t one_img_bytes = IMG_SIZE * sizeof(float);
+    const size_t one_feat_bytes = FEAT_SIZE * sizeof(float);
+
+    float* h_input = (float*)malloc(batch_size * one_img_bytes);
+    float* h_features = (float*)malloc(batch_size * one_feat_bytes);
+    if (!h_input || !h_features) { printf("Host malloc failed!\n"); return; }
+
+    printf("\n========== EXTRACT TRAIN FEATURES ==========" "\n");
+    train_features_out.resize(train_images.size() * FEAT_SIZE);
+    size_t idx = 0;
+    for (size_t i = 0; i + batch_size <= train_images.size(); i += batch_size) 
+    {
+        for (int b = 0; b < batch_size; ++b) memcpy(&h_input[b * IMG_SIZE], train_images[i + b].data(), one_img_bytes);
+        gpu_model.extract_features(h_input, h_features, batch_size);
 
 
+        for (int b = 0; b < batch_size; ++b) memcpy(&train_features_out[(idx + b) * FEAT_SIZE], &h_features[b * FEAT_SIZE], one_feat_bytes);
+        idx += batch_size; printf("Extracted %zu / %zu train images\r", idx, train_images.size());
+    }
+    printf("\nTrain feature extraction done.\n");
 
-// // Extract features from in-memory vectors (keeps old behavior)
-// void extract_features_dataset(
-//     GPUAutoencoder& gpu_model,
-//     const std::vector<std::vector<float>>& train_images,
-//     const std::vector<std::vector<float>>& test_images,
-//     int batch_size,
-//     std::vector<float>& train_features_out,
-//     std::vector<float>& test_features_out)
-// {
-//     const int IMG_SIZE = IMG_C * IMG_H * IMG_W;
-//     const int FEAT_SIZE = 128 * 8 * 8;
-//     const size_t one_img_bytes = IMG_SIZE * sizeof(float);
-//     const size_t one_feat_bytes = FEAT_SIZE * sizeof(float);
+    printf("\n========== EXTRACT TEST FEATURES ==========" "\n");
+    test_features_out.resize(test_images.size() * FEAT_SIZE);
+    idx = 0;
+    for (size_t i = 0; i + batch_size <= test_images.size(); i += batch_size) 
+    {
+        for (int b = 0; b < batch_size; ++b) memcpy(&h_input[b * IMG_SIZE], test_images[i + b].data(), one_img_bytes);
+        gpu_model.extract_features(h_input, h_features, batch_size);
 
-//     float* h_input = (float*)malloc(batch_size * one_img_bytes);
-//     float* h_features = (float*)malloc(batch_size * one_feat_bytes);
-//     if (!h_input || !h_features) { printf("Host malloc failed!\n"); return; }
+        for (int b = 0; b < batch_size; ++b) memcpy(&test_features_out[(idx + b) * FEAT_SIZE], &h_features[b * FEAT_SIZE], one_feat_bytes);
+        idx += batch_size; printf("Extracted %zu / %zu test images\r", idx, test_images.size());
+    }
+    printf("\nTest feature extraction done.\n");
 
-//     printf("\n========== EXTRACT TRAIN FEATURES ==========" "\n");
-//     train_features_out.resize(train_images.size() * FEAT_SIZE);
-//     size_t idx = 0;
-//     for (size_t i = 0; i + batch_size <= train_images.size(); i += batch_size) {
-//         for (int b = 0; b < batch_size; ++b) memcpy(&h_input[b * IMG_SIZE], train_images[i + b].data(), one_img_bytes);
-//         gpu_model.extract_features(h_input, h_features, batch_size);
-//         for (int b = 0; b < batch_size; ++b) memcpy(&train_features_out[(idx + b) * FEAT_SIZE], &h_features[b * FEAT_SIZE], one_feat_bytes);
-//         idx += batch_size; printf("Extracted %zu / %zu train images\r", idx, train_images.size());
-//     }
-//     printf("\nTrain feature extraction done.\n");
-
-//     printf("\n========== EXTRACT TEST FEATURES ==========" "\n");
-//     test_features_out.resize(test_images.size() * FEAT_SIZE);
-//     idx = 0;
-//     for (size_t i = 0; i + batch_size <= test_images.size(); i += batch_size) {
-//         for (int b = 0; b < batch_size; ++b) memcpy(&h_input[b * IMG_SIZE], test_images[i + b].data(), one_img_bytes);
-//         gpu_model.extract_features(h_input, h_features, batch_size);
-//         for (int b = 0; b < batch_size; ++b) memcpy(&test_features_out[(idx + b) * FEAT_SIZE], &h_features[b * FEAT_SIZE], one_feat_bytes);
-//         idx += batch_size; printf("Extracted %zu / %zu test images\r", idx, test_images.size());
-//     }
-//     printf("\nTest feature extraction done.\n");
-
-//     free(h_input); free(h_features);
-// }
+    free(h_input); free(h_features);
+}
 
 
-// // Extract features from CIFAR bins in directory (streaming) and append into provided vectors
-// bool extract_features_from_dir(GPUAutoencoder& gpu_model,
-//                                const std::string& cifar_dir,
-//                                const std::string& which, // "data_batch" or "test_batch"
-//                                std::vector<float>& features_out,
-//                                std::vector<int>& labels_out,
-//                                int batch_size)
-// {
-//     namespace fs = std::filesystem;
-//     if (!fs::exists(cifar_dir) || !fs::is_directory(cifar_dir)) { std::cerr << "Bad dir: " << cifar_dir << "\n"; return false; }
-
-//     std::vector<std::string> files;
-//     for (auto &ent : fs::directory_iterator(cifar_dir)) {
-//         if (!ent.is_regular_file()) continue;
-//         auto name = ent.path().filename().string();
-//         if (which == "test_batch") {
-//             if (name.find("test_batch") != std::string::npos) files.push_back(ent.path().string());
-//         } else {
-//             if (name.find("data_batch") != std::string::npos) files.push_back(ent.path().string());
-//         }
-//     }
-//     std::sort(files.begin(), files.end());
-//     if (files.empty()) { std::cerr << "No files for " << which << " in " << cifar_dir << "\n"; return false; }
-
-//     const int FEAT_SIZE = 128 * 8 * 8;
-//     const size_t IMG_ELEM = IMG_C * IMG_H * IMG_W;
-
-//     std::vector<float> h_input(batch_size * IMG_ELEM);
-//     std::vector<float> h_features(batch_size * FEAT_SIZE);
-
-//     for (const auto &fpath : files) {
-//         std::ifstream fin(fpath, std::ios::binary);
-//         if (!fin.is_open()) { fprintf(stderr, "Can't open %s\n", fpath.c_str()); continue; }
-//         std::vector<uint8_t> imgbuf(IMG_ELEM);
-//         uint8_t lbl; size_t in_batch = 0;
-//         while (true) {
-//             fin.read((char*)&lbl, 1); if (!fin) break;
-//             fin.read((char*)imgbuf.data(), IMG_ELEM); if (!fin) break;
-//             for (size_t j = 0; j < IMG_ELEM; ++j) h_input[in_batch * IMG_ELEM + j] = static_cast<float>(imgbuf[j]) / 255.0f;
-//             in_batch++;
-//             if (in_batch == (size_t)batch_size) {
-//                 gpu_model.extract_features(h_input.data(), h_features.data(), batch_size);
-//                 for (int b = 0; b < batch_size; ++b) {
-//                     for (int f = 0; f < FEAT_SIZE; ++f) features_out.push_back(h_features[b * FEAT_SIZE + f]);
-//                     labels_out.push_back((int)lbl); // label from last read - acceptable for batching if consistent per sample
-//                 }
-//                 in_batch = 0;
-//             }
-//         }
-//         fin.close();
-//     }
-//     return true;
-// }
-
-// // Write LIBSVM file
-// bool save_libsvm_file(const std::string& filepath, const std::vector<float>& features, const std::vector<int>& labels, int feat_dim)
-// {
-//     if (labels.empty() || features.empty()) return false;
-//     size_t n = labels.size(); if (features.size() != n * (size_t)feat_dim) return false;
-//     std::ofstream f(filepath);
-//     if (!f.is_open()) return false;
-//     for (size_t i = 0; i < n; ++i) {
-//         f << labels[i];
-//         const float* row = &features[i * feat_dim];
-//         for (int j = 0; j < feat_dim; ++j) {
-//             float v = row[j];
-//             if (v != 0.0f) f << " " << (j + 1) << ":" << std::fixed << std::setprecision(6) << v;
-//         }
-//         f << "\n";
-//     }
-//     return true;
-// }
-
-// void print_libsvm_commands(const std::string& train_file, const std::string& model_file, const std::string& test_file, const std::string& out_file) {
-//     std::cout << "svm-train -s 0 -t 2 " << train_file << " " << model_file << "\n";
-//     std::cout << "svm-predict " << test_file << " " << model_file << " " << out_file << "\n";
-// }
-
-// // int main() {
-// //     int batch_size = 32;
-// //     int epochs = 20;
-// //     float lr = 0.001f;
-// //     int patience = 2;
-
-// //     GPUAutoencoder gpu_model;
-// //     gpu_model.initialize();
-// //     gpu_model.load_weights("./weights/model.bin");
-
-// //     std::string cifar_dir = "../../data/cifar-10-batches-bin";
-
-// //     // Train (streaming per-batch)
-// //     train_autoencoder(gpu_model, cifar_dir, batch_size, epochs, lr, patience);
-
-// //     // Optionally extract features and produce LIBSVM files (commented here; enable as needed)
-// //     // std::vector<float> train_feats; std::vector<int> train_labels;
-// //     // extract_features_from_dir(gpu_model, cifar_dir, "data_batch", train_feats, train_labels, batch_size);
-// //     // save_libsvm_file("train.svm", train_feats, train_labels, 128*8*8);
-
-// //     printf("Done.\n");
-// //     return 0;
-// // }
 
 int main()
 {
@@ -374,17 +276,56 @@ int main()
         printf("Loading test data: %zu images\n", test_labels.size());
     }
 
-    train_autoencoder(
-    gpu_model,
-    train_images,
-    test_images,
-    batch_size,
-    epochs,
-    lr,
-    patience
-    );
+    // train_autoencoder(
+    // gpu_model,
+    // train_images,
+    // test_images,
+    // batch_size,
+    // epochs,
+    // lr,
+    // patience
+    // );
+
+    // After training, extract features from the datasets (preserve order)
+    std::vector<float> train_feats;
+    std::vector<float> test_feats;
+    extract_features_dataset(gpu_model, train_images, test_images, batch_size, train_feats, test_feats);
+
+    // Save features and labels to binary files (row-major float32, labels int32)
+    const int FEAT_DIM = 128 * 8 * 8;
+    // Train features
+    {
+        std::ofstream fout("train_features.bin", std::ios::binary);
+        fout.write(reinterpret_cast<const char*>(train_feats.data()), train_feats.size() * sizeof(float));
+        fout.close();
+    }
+    // Train labels
+    {
+        std::ofstream fout("train_labels.bin", std::ios::binary);
+        // write as int32
+        for (int v : train_labels) {
+            int32_t x = static_cast<int32_t>(v);
+            fout.write(reinterpret_cast<const char*>(&x), sizeof(int32_t));
+        }
+        fout.close();
+    }
+    // Test features
+    {
+        std::ofstream fout("test_features.bin", std::ios::binary);
+        fout.write(reinterpret_cast<const char*>(test_feats.data()), test_feats.size() * sizeof(float));
+        fout.close();
+    }
+    // Test labels
+    {
+        std::ofstream fout("test_labels.bin", std::ios::binary);
+        for (int v : test_labels) {
+            int32_t x = static_cast<int32_t>(v);
+            fout.write(reinterpret_cast<const char*>(&x), sizeof(int32_t));
+        }
+        fout.close();
+    }
 
     // Save weights after finishing
-    gpu_model.save_weights("./weights/model.bin");  
+    // gpu_model.save_weights("./weights/model.bin");
     // training 
 }
