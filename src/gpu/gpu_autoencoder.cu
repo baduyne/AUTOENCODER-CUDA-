@@ -14,6 +14,9 @@
 // ============================================================================
 // Forward Pass Kernels
 // ============================================================================
+// Tiling parameters for shared-memory convolution
+#define TILE_W 16
+#define TILE_H 16
 // Index helper for NCHW layout
 __host__ __device__ inline int idx4(int n, int c, int h, int w, int C, int H, int W) {
     return ((n * C + c) * H + h) * W + w;
@@ -66,17 +69,99 @@ __global__ void conv2d_forward_kernel(
     output[out_idx] = acc + bias[oc];  // add bias ngay tại đây
 }
 
+// Shared-memory tiled convolution (3x3 kernel, padding=1, stride=1)
+__global__ void conv2d_forward_tiled_kernel(
+    const float* __restrict__ input,
+    const float* __restrict__ weights,
+    const float* __restrict__ bias,
+    float* __restrict__ output,
+    int batch_size,
+    int in_channels,
+    int out_channels,
+    int height,
+    int width
+) {
+    constexpr int K = 3;
+    constexpr int P = 1; // padding
+
+    // block tile origin in output coordinates
+    int tile_x = blockIdx.x * TILE_W;
+    int tile_y = blockIdx.y * TILE_H;
+
+    // blockIdx.z encodes (n * out_channels + oc)
+    int n_oc = blockIdx.z;
+    int n = n_oc / out_channels;
+    int oc = n_oc % out_channels;
+
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+
+    // Shared memory tile (for one input channel at a time)
+    __shared__ float sh[(TILE_H + 2) * (TILE_W + 2)];
+
+    // Each thread will compute one output position within the tile (if in range)
+    int out_x = tile_x + tx;
+    int out_y = tile_y + ty;
+
+    float acc = 0.0f;
+
+    // Loop over input channels, accumulate contribution
+    for (int ic = 0; ic < in_channels; ++ic) {
+        // Cooperative load into shared memory: we need to load a (TILE_H+2)x(TILE_W+2)
+        // patch of input for this ic and batch n, accounting for padding.
+        for (int y = ty; y < TILE_H + 2; y += blockDim.y) {
+            for (int x = tx; x < TILE_W + 2; x += blockDim.x) {
+                int in_x = tile_x + x - P;
+                int in_y = tile_y + y - P;
+                float v = 0.0f;
+                if (in_x >= 0 && in_x < width && in_y >= 0 && in_y < height) {
+                    int in_idx = idx4(n, ic, in_y, in_x, in_channels, height, width);
+                    v = input[in_idx];
+                }
+                sh[y * (TILE_W + 2) + x] = v;
+            }
+        }
+
+        __syncthreads();
+
+        // Now compute convolution for the thread's output position (if inside image)
+        if (out_x < width && out_y < height) {
+            // For 3x3 kernel
+            for (int ky = 0; ky < K; ++ky) {
+                for (int kx = 0; kx < K; ++kx) {
+                    int sx = tx + kx;
+                    int sy = ty + ky;
+                    float in_val = sh[sy * (TILE_W + 2) + sx];
+                    int w_idx = ((oc * in_channels + ic) * K + ky) * K + kx;
+                    acc += in_val * weights[w_idx];
+                }
+            }
+        }
+
+        __syncthreads();
+    }
+
+    // Add bias and write output
+    if (out_x < width && out_y < height) {
+        int out_idx = idx4(n, oc, out_y, out_x, out_channels, height, width);
+        output[out_idx] = acc + bias[oc];
+    }
+}
+
 void gpu_conv2d_forward(
     const float* dev_input_data, const float* d_weights, const float* d_bias,
     float* d_output, int batch_size, int in_channels, int out_channels,
     int height, int width
 ) {
-    int total_outputs = batch_size * out_channels * height * width;
-    int block_size = 512;
-    int grid_size = (total_outputs + block_size - 1) / block_size;
-    conv2d_forward_kernel<<<grid_size, block_size>>>(
-        dev_input_data, d_weights, d_bias, d_output, batch_size, in_channels,
-        out_channels, height, width
+    // Launch tiled shared-memory kernel: grid.z encodes batch * out_channels
+    dim3 block(TILE_W, TILE_H);
+    dim3 grid((width + TILE_W - 1) / TILE_W,
+              (height + TILE_H - 1) / TILE_H,
+              batch_size * out_channels);
+
+    conv2d_forward_tiled_kernel<<<grid, block>>>(
+        dev_input_data, d_weights, d_bias, d_output,
+        batch_size, in_channels, out_channels, height, width
     );
     CUDA_CHECK(cudaGetLastError());
 }

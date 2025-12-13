@@ -276,15 +276,15 @@ int main()
         printf("Loading test data: %zu images\n", test_labels.size());
     }
 
-    // train_autoencoder(
-    // gpu_model,
-    // train_images,
-    // test_images,
-    // batch_size,
-    // epochs,
-    // lr,
-    // patience
-    // );
+    train_autoencoder(
+    gpu_model,
+    train_images,
+    test_images,
+    batch_size,
+    epochs,
+    lr,
+    patience
+    );
 
     // After training, extract features from the datasets (preserve order)
     std::vector<float> train_feats;
