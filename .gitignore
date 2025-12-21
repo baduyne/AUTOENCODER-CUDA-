@@ -5,3 +5,41 @@ cudnn-local-repo-ubuntu2404-9.17.0_1.0-1_amd64.deb
 data/*
 src/gpu/eval_log.csv
 src/gpu/train_log.csv
+# Build output
+build/
+
+# Dataset and large data files
+data/
+
+third_party/
+# CMake and build system files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Compiled object files and libraries
+*.o
+*.so
+*.a
+*.dll
+*.exe
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# OS and editor metadata
+.DS_Store
+.vscode/
+*.swp
+
+CSC14120_2025_Final Project.pdf
+references
+cudnn-local-repo-ubuntu2404-9.17.0_1.0-1_amd64.deb
+/src/gpu/weights/*
+data/*
