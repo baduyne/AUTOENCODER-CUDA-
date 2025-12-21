@@ -1,39 +1,73 @@
 #include "utils.h"
 #include <fstream>
 #include <iostream>
+#include <filesystem>
+#include <random>
+#include <algorithm>
 
 const int IMAGE_SIZE = 32*32*3;
 
-bool load_cifar10_images(const std::string &file_name,
-                         std::vector<std::vector<float>> &images,
-                         std::vector<int> &labels, int num_imgs)
+
+void shuffle_dataset(std::vector<std::vector<float>>& images, std::vector<int>& labels)
 {
-    std::ifstream file(file_name, std::ios::binary);
+    if (images.size() != labels.size()) return;
+    std::vector<size_t> idx(images.size());
+    for (size_t i = 0; i < idx.size(); ++i) idx[i] = i;
+    std::random_device rd;
+    std::mt19937 g(rd());
+    std::shuffle(idx.begin(), idx.end(), g);
 
-    if (!file.is_open()) {
-        std::cout << "Can't open file: " << file_name << "\n";
-        return false;
+    std::vector<std::vector<float>> images_shuffled;
+    std::vector<int> labels_shuffled;
+    images_shuffled.reserve(images.size());
+    labels_shuffled.reserve(labels.size());
+
+    for (size_t k = 0; k < idx.size(); ++k) {
+        images_shuffled.push_back(std::move(images[idx[k]]));
+        labels_shuffled.push_back(labels[idx[k]]);
     }
 
-    images.resize(num_imgs, std::vector<float>(IMAGE_SIZE));
-    labels.resize(num_imgs);
+    images.swap(images_shuffled);
+    labels.swap(labels_shuffled);
+}
 
-    for (int i = 0; i < num_imgs; i++)
-    {
-        uint8_t coarse_label;
-        file.read((char*)&coarse_label, 1);
 
-        uint8_t label;
-        file.read((char*)&label, 1);
+bool load_cifar10_dataset(const std::vector<std::string>& file_list,
+                          std::vector<std::vector<float>>& images,
+                          std::vector<int>& labels,
+                          bool shuffle)
+{
+    images.clear();
+    labels.clear();
 
-        labels[i] = label;
+    for (const auto &fpath : file_list) {
+        std::ifstream file(fpath, std::ios::binary);
+        if (!file.is_open()) {
+            std::cerr << "Can't open file: " << fpath << "\n";
+            return false;
+        }
 
-        uint8_t buffer[IMAGE_SIZE];
-        file.read((char*)buffer, IMAGE_SIZE);
+        // Read until EOF
+        while (true) {
+            uint8_t lbl;
+            file.read((char*)&lbl, 1);
+            if (!file) break; // EOF or error
 
-        for (int j = 0; j < IMAGE_SIZE; j++)
-            images[i][j] = buffer[j] / 255.0f;
+            std::vector<float> img(IMAGE_SIZE);
+            std::vector<uint8_t> buffer(IMAGE_SIZE);
+            file.read((char*)buffer.data(), IMAGE_SIZE);
+            if (!file) break; // incomplete record
+
+            for (int j = 0; j < IMAGE_SIZE; ++j)
+                img[j] = static_cast<float>(buffer[j]) / 255.0f;
+
+            images.push_back(std::move(img));
+            labels.push_back(static_cast<int>(lbl));
+        }
     }
 
+    if (shuffle) shuffle_dataset(images, labels);
     return true;
 }
+
+

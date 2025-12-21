@@ -1,4 +1,5 @@
 #include"gpu_autoencoder.h"
+#include <algorithm>
 
 // Macro kiểm tra lỗi CUDA đơn giản
 #define CUDA_CHECK(call) \
@@ -71,7 +72,7 @@ void gpu_conv2d_forward(
     int height, int width
 ) {
     int total_outputs = batch_size * out_channels * height * width;
-    int block_size = 256;
+    int block_size = 512;
     int grid_size = (total_outputs + block_size - 1) / block_size;
     conv2d_forward_kernel<<<grid_size, block_size>>>(
         dev_input_data, d_weights, d_bias, d_output, batch_size, in_channels,
@@ -89,7 +90,7 @@ __global__ void relu_forward_kernel(float* __restrict__ data, int size) {
 }
 
 void gpu_relu_forward(float* d_data, int size) {
-    int block_size = 256;
+    int block_size = 512;
     int grid_size = (size + block_size - 1) / block_size;
     relu_forward_kernel<<<grid_size, block_size>>>(d_data, size);
     CUDA_CHECK(cudaGetLastError());
@@ -145,7 +146,7 @@ void gpu_maxpool2d_forward(
     int out_height = in_height / 2;
     int out_width = in_width / 2;
     int total_outputs = batch_size * channels * out_height * out_width;
-    int block_size = 256;
+    int block_size = 512;
     int grid_size = (total_outputs + block_size - 1) / block_size;
     maxpool2d_forward_kernel<<<grid_size, block_size>>>(
         dev_input_data, d_output, batch_size, channels, in_height, in_width
@@ -189,7 +190,7 @@ void gpu_upsample2d_forward(
     int out_height = in_height * 2;
     int out_width = in_width * 2;
     int total_outputs = batch_size * channels * out_height * out_width;
-    int block_size = 256;
+    int block_size = 512;
     int grid_size = (total_outputs + block_size - 1) / block_size;
     upsample2d_forward_kernel<<<grid_size, block_size>>>(
         dev_input_data, d_output, batch_size, channels, in_height, in_width
@@ -316,7 +317,7 @@ void gpu_conv2d_backward(
     float* dev_grad_input, float* d_dL_dweights, float* d_dL_dbias,
     int batch_size, int in_channels, int out_channels, int height, int width
 ) {
-    int block_size = 256;
+    int block_size = 512;
 
     // dL/dinput
     if (dev_grad_input) {
@@ -365,7 +366,7 @@ __global__ void relu_backward_kernel(
 void gpu_relu_backward(
     const float* d_output, const float* d_dL_doutput, float* dev_grad_input, int size
 ) {
-    int block_size = 256;
+    int block_size = 512;
     int grid_size = (size + block_size - 1) / block_size;
     relu_backward_kernel<<<grid_size, block_size>>>(
         d_output, d_dL_doutput, dev_grad_input, size
@@ -425,7 +426,7 @@ void gpu_maxpool2d_backward(
     int out_height = in_height / 2;
     int out_width = in_width / 2;
     int total_outputs = batch_size * channels * out_height * out_width;
-    int block_size = 256;
+    int block_size = 512;
     int grid_size = (total_outputs + block_size - 1) / block_size;
 
     // Khởi tạo dL_dinput bằng 0 trước khi sử dụng atomicAdd
@@ -481,7 +482,7 @@ void gpu_upsample2d_backward(
     int in_height, int in_width
 ) {
     int total_inputs = batch_size * channels * in_height * in_width;
-    int block_size = 256;
+    int block_size = 512;
     int grid_size = (total_inputs + block_size - 1) / block_size;
     upsample2d_backward_kernel<<<grid_size, block_size>>>(
         d_dL_doutput, dev_grad_input, batch_size, channels, in_height, in_width
@@ -504,7 +505,7 @@ __global__ void mse_loss_gradient_kernel(
 void gpu_mse_loss_gradient(
     const float* d_output, const float* dev_target_data, float* d_dL_doutput, int size
 ) {
-    int block_size = 256;
+    int block_size = 512;
     int grid_size = (size + block_size - 1) / block_size;
     mse_loss_gradient_kernel<<<grid_size, block_size>>>(
         d_output, dev_target_data, d_dL_doutput, size
@@ -543,7 +544,7 @@ __global__ void mse_loss_kernel(
 }
 
 float gpu_mse_loss(const float* d_output, const float* dev_target_data, int size) {
-    int block_size = 256;
+    int block_size = 512;
     int num_blocks = (size + block_size - 1) / block_size;
     float* d_partial_sums;
     CUDA_CHECK(cudaMalloc(&d_partial_sums, num_blocks * sizeof(float)));
@@ -601,7 +602,7 @@ void gpu_sgd_update(
     float* d_weights, float* d_dL_dweights, float learning_rate,
     float clip_value, int size
 ) {
-    int block_size = 256;
+    int block_size = 512;
     int grid_size = (size + block_size - 1) / block_size;
     sgd_update_kernel<<<grid_size, block_size>>>(
         d_weights, d_dL_dweights, learning_rate, clip_value, size
@@ -642,26 +643,30 @@ static void init_weights_xavier(float* weights, int in_channels, int out_channel
 
 GPUAutoencoder::GPUAutoencoder() {
     // Host pointers
-    host_enc_conv1_w = host_enc_conv1_b = host_enc_conv2_w = host_enc_conv2_b = host_dec_conv1_w = host_dec_conv1_b = host_dec_conv2_w = host_dec_conv2_b = host_dec_conv3_w = host_dec_conv3_b = nullptr;
+    host_enc_conv1_w = host_enc_conv1_b = host_enc_conv2_w = host_enc_conv2_b = nullptr; // Encoder Host weights
+    host_dec_conv1_w = host_dec_conv1_b = host_dec_conv2_w = host_dec_conv2_b = host_dec_conv3_w = host_dec_conv3_b = nullptr; // Decoder Host weights
 
     // Device weight pointers
-    dev_enc_conv1_w = dev_enc_conv1_b = dev_enc_conv2_w = dev_enc_conv2_b = dev_dec_conv1_w = dev_dec_conv1_b = dev_dec_conv2_w = dev_dec_conv2_b = dev_dec_conv3_w = dev_dec_conv3_b = nullptr;
+    dev_enc_conv1_w = dev_enc_conv1_b = dev_enc_conv2_w = dev_enc_conv2_b = nullptr; // Encoder device weights
+    dev_dec_conv1_w = dev_dec_conv1_b = dev_dec_conv2_w = dev_dec_conv2_b = dev_dec_conv3_w = dev_dec_conv3_b = nullptr; // Decoder device  weights
 
     // Device gradient pointers
-    dev_grad_enc_conv1_w = dev_grad_enc_conv1_b = dev_grad_enc_conv2_w = dev_grad_enc_conv2_b = dev_grad_dec_conv1_w = dev_grad_dec_conv1_b = dev_grad_dec_conv2_w = dev_grad_dec_conv2_b = dev_grad_dec_conv3_w = dev_grad_dec_conv3_b = nullptr;
+    dev_grad_enc_conv1_w = dev_grad_enc_conv1_b = dev_grad_enc_conv2_w = dev_grad_enc_conv2_b = nullptr; //Encoder device gradients
+
+    dev_grad_dec_conv1_w = dev_grad_dec_conv1_b = dev_grad_dec_conv2_w = dev_grad_dec_conv2_b = dev_grad_dec_conv3_w = dev_grad_dec_conv3_b = nullptr; //Decoder device gradients
 
     // Device activation pointers
-    dev_input_data = dev_target_data = nullptr;
-    dev_enc_act1 = dev_enc_pool1 = dev_enc_act2 = dev_latent = nullptr;
-    dev_dec_conv1_out = dev_dec_upsample1 = dev_dec_act1 = dev_dec_upsample2 = dev_dec_out = nullptr;
+    dev_input_data = dev_target_data = nullptr; // Input and target data
+    dev_enc_act1 = dev_enc_pool1 = dev_enc_act2 = dev_latent = nullptr; // Encoder activations
+    dev_dec_conv1_out = dev_dec_upsample1 = dev_dec_act1 = dev_dec_upsample2 = dev_dec_out = nullptr; // Decoder activations
 
     // Device gradient buffers
-    dev_grad_dec_out = dev_grad_dec_outdev_grad_dec_upsample2 = dev_grad_dec_act1 = dev_grad_dec_upsample1 = nullptr;
+    dev_grad_dec_out = dev_grad_dec_outdev_grad_dec_upsample2 = dev_grad_dec_act1 = dev_grad_dec_upsample1 = nullptr; 
     dev_grad_dec_conv1 = dev_grad_latent = dev_grad_enc_act2 = dev_grad_enc_pool1 = nullptr;
     dev_grad_enc_act1 = dev_grad_input = nullptr;
 
     batch_size = 0;
-    max_batch_size = 64;  // Default max batch size
+    max_batch_size = 0;
     memory_allocated = false;
 }
 
@@ -671,7 +676,7 @@ GPUAutoencoder::~GPUAutoencoder() {
 }
 
 void GPUAutoencoder::allocate_host_memory() {
-    if (host_enc_conv1_w) return; // Đã cấp phát
+    if (host_enc_conv1_w) return; 
 
     host_enc_conv1_w = new float[W1_SIZE];
     host_enc_conv1_b = new float[B1_SIZE];
@@ -698,9 +703,11 @@ void GPUAutoencoder::free_host_memory() {
     delete[] host_dec_conv3_b; host_dec_conv3_b = nullptr;
 }
 
-void GPUAutoencoder::allocate_device_memory(int batch_size) {
-    if (memory_allocated && batch_size <= max_batch_size) {
-        batch_size = batch_size;
+void GPUAutoencoder::allocate_device_memory(int requested_batch_size) {
+    // Keep a sensible upper limit per allocation to avoid huge kernel launches.
+    // We'll allocate buffers sized to requested_batch_size, but if already allocated
+    // and large enough, we reuse them. If smaller, we reallocate.
+    if (memory_allocated && requested_batch_size <= max_batch_size) {
         return;
     }
 
@@ -708,8 +715,7 @@ void GPUAutoencoder::allocate_device_memory(int batch_size) {
         free_device_memory();
     }
 
-    max_batch_size = batch_size;
-    batch_size = batch_size;
+    max_batch_size = requested_batch_size;
 
     // Allocate device weights
     CUDA_CHECK(cudaMalloc(&dev_enc_conv1_w, W1_SIZE * sizeof(float)));
@@ -735,28 +741,30 @@ void GPUAutoencoder::allocate_device_memory(int batch_size) {
     CUDA_CHECK(cudaMalloc(&dev_grad_dec_conv3_w, W5_SIZE * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&dev_grad_dec_conv3_b, B5_SIZE * sizeof(float)));
 
-    // Allocate device activations
-    // Input: batch x 3 x 32 x 32
+    // Allocate device activations sized to max_batch_size
     CUDA_CHECK(cudaMalloc(&dev_input_data, max_batch_size * 3 * 32 * 32 * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&dev_target_data, max_batch_size * 3 * 32 * 32 * sizeof(float)));
-    
-    // act1: batch x 256 x 32 x 32
     CUDA_CHECK(cudaMalloc(&dev_enc_act1, max_batch_size * 256 * 32 * 32 * sizeof(float)));
-    
-    // pool1: batch x 256 x 16 x 16
     CUDA_CHECK(cudaMalloc(&dev_enc_pool1, max_batch_size * 256 * 16 * 16 * sizeof(float)));
-    
-    // act2: batch x 128 x 16 x 16
     CUDA_CHECK(cudaMalloc(&dev_enc_act2, max_batch_size * 128 * 16 * 16 * sizeof(float)));
-    
-    // act3 (latent): batch x 128 x 8 x 8
     CUDA_CHECK(cudaMalloc(&dev_latent, max_batch_size * 128 * 8 * 8 * sizeof(float)));
-    
-    // conv3_out: batch x 128 x 8 x 8
     CUDA_CHECK(cudaMalloc(&dev_dec_conv1_out, max_batch_size * 128 * 8 * 8 * sizeof(float)));
-    
-    // up1: batch x 128 x 16 x 16
     CUDA_CHECK(cudaMalloc(&dev_dec_upsample1, max_batch_size * 128 * 16 * 16 * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dev_dec_act1, max_batch_size * 256 * 16 * 16 * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dev_dec_upsample2, max_batch_size * 256 * 32 * 32 * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dev_dec_out, max_batch_size * 3 * 32 * 32 * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dev_grad_dec_out, max_batch_size * 3 * 32 * 32 * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dev_grad_dec_outdev_grad_dec_upsample2, max_batch_size * 256 * 32 * 32 * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dev_grad_dec_act1, max_batch_size * 256 * 16 * 16 * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dev_grad_dec_upsample1, max_batch_size * 128 * 16 * 16 * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dev_grad_dec_conv1, max_batch_size * 128 * 8 * 8 * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dev_grad_latent, max_batch_size * 128 * 8 * 8 * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dev_grad_enc_act2, max_batch_size * 128 * 16 * 16 * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dev_grad_enc_pool1, max_batch_size * 256 * 16 * 16 * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dev_grad_enc_act1, max_batch_size * 256 * 32 * 32 * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dev_grad_input, max_batch_size * 3 * 32 * 32 * sizeof(float)));
+
+    memory_allocated = true;
     
     // act4: batch x 256 x 16 x 16
     CUDA_CHECK(cudaMalloc(&dev_dec_act1, max_batch_size * 256 * 16 * 16 * sizeof(float)));
@@ -841,7 +849,6 @@ void GPUAutoencoder::initialize() {
     allocate_host_memory();
 
     // Initialize weights using Xavier initialization
-    // Chú ý: Kích thước đầu vào/đầu ra cho Xavier là số kênh
     init_weights_xavier(host_enc_conv1_w, 3, 256);
     init_weights_xavier(host_enc_conv2_w, 256, 128);
     init_weights_xavier(host_dec_conv1_w, 128, 128);
@@ -898,7 +905,7 @@ void GPUAutoencoder::forward_device(const float* d_in, int batch_size) {
 }
 
 void GPUAutoencoder::forward(const float* h_input, float* h_output, int batch_size) {
-    // Ensure device memory is allocated
+    // Device memory is allocated
     allocate_device_memory(batch_size);
     
     // Copy input to device
@@ -1031,17 +1038,33 @@ void GPUAutoencoder::extract_features_device(const float* d_in, float* d_feature
 }
 
 void GPUAutoencoder::extract_features(const float* h_input, float* h_features, int batch_size) {
-    // Ensure device memory is allocated
-    allocate_device_memory(batch_size);
-    
-    // Copy input to device
-    CUDA_CHECK(cudaMemcpy(dev_input_data, h_input, batch_size * 3 * 32 * 32 * sizeof(float), cudaMemcpyHostToDevice));
+    // Process large batch sizes in chunks to avoid launching kernels with
+    // grid dimensions larger than the device limit.
+    const int IMG_SZ = 3 * 32 * 32;
+    const int FEATURE_SZ = 128 * 8 * 8; // 8192
+    const int MAX_CHUNK = 1024; // reasonable chunk size per GPU launch
 
-    // Run encoder on device
-    extract_features_device(dev_input_data, dev_latent, batch_size);
+    int remaining = batch_size;
+    int offset = 0;
 
-    // Copy features back to host (128 x 8 x 8 = 8192 per image)
-    CUDA_CHECK(cudaMemcpy(h_features, dev_latent, batch_size * 128 * 8 * 8 * sizeof(float), cudaMemcpyDeviceToHost));
+    while (remaining > 0) {
+        int chunk = std::min(remaining, MAX_CHUNK);
+
+        // Ensure device buffers are allocated for the chunk size
+        allocate_device_memory(chunk);
+
+        // Copy this chunk of input to device
+        CUDA_CHECK(cudaMemcpy(dev_input_data, h_input + offset * IMG_SZ, chunk * IMG_SZ * sizeof(float), cudaMemcpyHostToDevice));
+
+        // Run encoder for this chunk
+        extract_features_device(dev_input_data, dev_latent, chunk);
+
+        // Copy features back to host
+        CUDA_CHECK(cudaMemcpy(h_features + offset * FEATURE_SZ, dev_latent, chunk * FEATURE_SZ * sizeof(float), cudaMemcpyDeviceToHost));
+
+        remaining -= chunk;
+        offset += chunk;
+    }
 }
 
 
@@ -1128,6 +1151,5 @@ void GPUAutoencoder::load_weights(const std::string& filepath) {
 
     printf("GPU Model weights loaded from: %s\n", filepath.c_str());
 }
-
 
 
