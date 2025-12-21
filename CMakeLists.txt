@@ -37,7 +37,6 @@ if (USE_CUDA)
     set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
     target_sources(dl_core PRIVATE 
-        src/cpu/src/conv2d_cuda.cu
         src/gpu/main.cu
     )
 else()
