@@ -10,7 +10,7 @@ int cpu_phase_main(int argc, char** argv) {
         const char* env_cifar = std::getenv("CIFAR_ROOT");
         std::string cifar_root = env_cifar ? env_cifar : "../data/cifar-10-batches-bin";
         
-        std::string ae_save_path  = "autoencoder_cpu.bin";
+        std::string ae_save_path  = "./weight/model_cpu.bin";
         std::string svm_model_path= "svm_latent.model";
         
         std::cout << "Using CIFAR-10 dataset from: " << cifar_root << std::endl;
