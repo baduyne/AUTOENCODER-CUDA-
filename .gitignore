@@ -4,7 +4,6 @@ build/
 # Dataset and large data files
 data/
 
-third_party/
 # CMake and build system files
 CMakeFiles/
 CMakeCache.txt
@@ -44,7 +43,6 @@ build/
 # Dataset and large data files
 data/
 
-third_party/
 # CMake and build system files
 CMakeFiles/
 CMakeCache.txt
