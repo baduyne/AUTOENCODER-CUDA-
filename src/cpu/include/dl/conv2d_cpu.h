@@ -1,32 +1,36 @@
 #pragma once
-#include <torch/torch.h>
+#include <cstddef>
 
 namespace dl {
 
-// Forward conv2d CPU (naive)
-// input:  [N, C_in, H, W]
-// weight: [C_out, C_in, K, K]
-// bias:   [C_out]
-// output: [N, C_out, H_out, W_out]
-torch::Tensor conv2d_cpu(const torch::Tensor& input,
-                         const torch::Tensor& weight,
-                         const torch::Tensor& bias,
-                         int stride = 1,
-                         int padding = 1);
+/**
+ * Conv2D forward (CPU, thuần float*)
+ * input:   [N, Cin, H, W]
+ * weight:  [Cout, Cin, K, K]
+ * bias:    [Cout]
+ * output:  [N, Cout, H_out, W_out]
+ * - Caller cấp phát sẵn buffer output.
+ * - Tính H_out, W_out = (H + 2*padding - K)/stride + 1
+ */
+void conv2d_forward_cpu(const float* input,
+                        const float* weight,
+                        const float* bias,
+                        float* output,
+                        int N, int Cin, int H, int W,
+                        int Cout, int K, int stride, int padding);
 
-// Struct chứa gradient cho conv2d
-struct Conv2DGrad {
-    torch::Tensor grad_input;   // [N, C_in, H, W]
-    torch::Tensor grad_weight;  // [C_out, C_in, K, K]
-    torch::Tensor grad_bias;    // [C_out]
-};
-
-// Backward conv2d CPU
-// Cho input, weight, grad_output -> trả về grad_input, grad_weight, grad_bias
-Conv2DGrad conv2d_backward_cpu(const torch::Tensor& input,
-                               const torch::Tensor& weight,
-                               const torch::Tensor& grad_output,
-                               int stride = 1,
-                               int padding = 1);
+/**
+ * Conv2D backward (CPU, thuần float*)
+ * Tính toàn bộ grad_input, grad_weight, grad_bias
+ * - Caller cấp phát sẵn các buffer grad phù hợp.
+ */
+void conv2d_backward_cpu(const float* input,         // [N, Cin, H, W]
+                         const float* weight,        // [Cout, Cin, K, K]
+                         const float* grad_output,   // [N, Cout, H_out, W_out]
+                         float* grad_input,          // [N, Cin, H, W]
+                         float* grad_weight,         // [Cout, Cin, K, K]
+                         float* grad_bias,           // [Cout]
+                         int N, int Cin, int H, int W,
+                         int Cout, int K, int stride, int padding);
 
 } // namespace dl
