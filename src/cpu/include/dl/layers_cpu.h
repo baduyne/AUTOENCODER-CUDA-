@@ -1,84 +1,68 @@
 #pragma once
-#include <torch/torch.h>
-#include "dl/conv2d_cpu.h"
+#include <vector>
+#include <string>
+#include <cstddef>
+#include <memory>
 
 namespace dl {
 
-// -------- Conv2D Layer (CPU) --------
-class Conv2D {
+// (LinearLayerCPU removed — not used by current autoencoder)
+
+// ===== Conv2D Layer =====
+class Conv2DCPU {
 public:
-    Conv2D(int in_channels,
-           int out_channels,
-           int kernel_size = 3,
-           int stride = 1,
-           int padding = 1,
-           const torch::Device& device = torch::kCPU);
-
-    // forward trên CPU (dùng conv2d_cpu)
-    torch::Tensor forward(const torch::Tensor& input) const;
-
-    // getter/setter cho weight/bias (dùng save/load, update)
-    const torch::Tensor& weight() const { return weight_; }
-    const torch::Tensor& bias()   const { return bias_;  }
-    torch::Tensor& weight() { return weight_; }
-    torch::Tensor& bias()   { return bias_;  }
-
-    int stride()  const { return stride_;  }
-    int padding() const { return padding_; }
-
+    Conv2DCPU(int in_channels, int out_channels, int kernel_size, int stride=1, int padding=0);
+    void forward(const float* input, float* output, size_t N, int H, int W) const;
+    void backward(const float* input, const float* grad_output, float* grad_input,
+                  float learning_rate, size_t N, int H, int W);
+    void save(const std::string& path) const;
+    void load(const std::string& path);
+    // Accessors for raw weight/bias buffers (for saving/loading in same layout as GPU)
+    const float* weight_data() const { return weight_.data(); }
+    float* weight_data() { return weight_.data(); }
+    size_t weight_size() const { return weight_.size(); }
+    const float* bias_data() const { return bias_.data(); }
+    float* bias_data() { return bias_.data(); }
+    size_t bias_size() const { return bias_.size(); }
 private:
-    torch::Tensor weight_;    // [C_out, C_in, K, K]
-    torch::Tensor bias_;      // [C_out]
-    int stride_;
-    int padding_;
+    int Cin_, Cout_, K_, stride_, padding_;
+    std::vector<float> weight_; // [Cout, Cin, K, K]
+    std::vector<float> bias_;   // [Cout]
 };
 
-// -------- ReLU (CPU) --------
+// ===== MaxPool2D =====
+class MaxPool2DCPU {
+public:
+    MaxPool2DCPU(int kernel, int stride);
+    // forward/backward operate with input shape [N, C, H, W]
+    void forward(const float* input, float* output, size_t N, int C, int H, int W);
+    void backward(const float* grad_output, float* grad_input, size_t N, int C, int H, int W);
+private:
+    int k_, s_;
+    // store last argmax indices (flattened index into input) for backward
+    std::vector<int> last_argmax_;
+    int last_Hout_ = 0, last_Wout_ = 0;
+};
 
-// Forward: y = max(0, x)
-torch::Tensor relu_cpu(const torch::Tensor& input);
+// ===== UpSample2D (nearest) =====
+class UpSample2DCPU {
+public:
+    UpSample2DCPU(int scale);
+    void forward(const float* input, float* output, size_t N, int C, int H, int W);
+    void backward(const float* grad_output, float* grad_input, size_t N, int C, int H, int W);
+private:
+    int scale_;
+};
 
-// Backward: dL/dx = dL/dy * (y > 0 ? 1 : 0)
-// dùng output y của ReLU để làm mask
-torch::Tensor relu_backward_cpu(const torch::Tensor& grad_output,
-                                const torch::Tensor& relu_output);
-
-// -------- Max Pooling 2x2 (CPU) --------
-
-// Forward: MaxPool2D(2x2, stride=2)
-// Input:  [N, C, H, W]
-// Output: [N, C, H/2, W/2]
-torch::Tensor maxpool2d_2x2_cpu(const torch::Tensor& input);
-
-// Backward:
-// grad_output: [N, C, H/2, W/2]
-// input:       [N, C, H, W] (giá trị trước pooling)
-// grad_input:  [N, C, H, W]
-torch::Tensor maxpool2d_2x2_backward_cpu(const torch::Tensor& grad_output,
-                                         const torch::Tensor& input);
-
-// -------- Upsampling 2x (nearest neighbor, CPU) --------
-
-// Forward: nearest neighbor 2x
-// Input:  [N, C, H, W]
-// Output: [N, C, H*2, W*2]
-torch::Tensor upsample_nearest2x_cpu(const torch::Tensor& input);
-
-// Backward:
-// grad_output: [N, C, H*2, W*2]
-// input:       [N, C, H, W] (giá trị trước upsample)
-// grad_input:  [N, C, H, W]
-torch::Tensor upsample_nearest2x_backward_cpu(const torch::Tensor& grad_output,
-                                              const torch::Tensor& input);
-
-// -------- MSE Loss (CPU) --------
-// L = mean((output - target)^2)
-torch::Tensor mse_loss_cpu(const torch::Tensor& output,
-                           const torch::Tensor& target);
-
-// Backward cho MSE: trả về dL/dOutput
-// dL/dOutput = 2 * (output - target) / numel
-torch::Tensor mse_loss_backward_cpu(const torch::Tensor& output,
-                                    const torch::Tensor& target);
+// ===== Activation Layer (ReLU, Sigmoid, ...) =====
+class ActivationCPU {
+public:
+    enum Type { ReLU, Sigmoid, None };
+    explicit ActivationCPU(Type type);
+    void forward(const float* input, float* output, size_t N) const;
+    void backward(const float* input, const float* grad_output, float* grad_input, size_t N) const;
+private:
+    Type type_;
+};
 
 } // namespace dl

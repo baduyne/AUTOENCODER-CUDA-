@@ -1,374 +1,218 @@
 #include "dl/layers_cpu.h"
-
-#include <algorithm>
-#include <stdexcept>
 #include <cmath>
+#include <fstream>
+#include <cassert>
+#include <cstring>
+#include <random>
+#include <algorithm>
+#include <iostream>
+#include "dl/conv2d_cpu.h"
 
 namespace dl {
 
-// ===================== Conv2D Layer =====================
+// (LinearLayerCPU implementation removed; autoencoder uses Conv/Pool/UpSample/Activation only)
 
-Conv2D::Conv2D(int in_channels,
-               int out_channels,
-               int kernel_size,
-               int stride,
-               int padding,
-               const torch::Device& device)
-    : stride_(stride)
-    , padding_(padding)
+// ===== ActivationCPU =====
+ActivationCPU::ActivationCPU(Type type) : type_(type) {}
+void ActivationCPU::forward(const float* input, float* output, size_t N) const {
+    switch(type_) {
+    case ReLU:
+        for(size_t i=0;i<N;++i) output[i]=input[i]>0?input[i]:0;
+        break;
+    case Sigmoid:
+        for(size_t i=0;i<N;++i) output[i]=1.f/(1.f+std::exp(-input[i]));
+        break;
+    case None:
+    default:
+        memcpy(output, input, N*sizeof(float));
+    }
+}
+void ActivationCPU::backward(const float* input, const float* grad_output, float* grad_input, size_t N) const {
+    switch(type_) {
+    case ReLU:
+        for(size_t i=0;i<N;++i) grad_input[i]=input[i]>0?grad_output[i]:0.f;
+        break;
+    case Sigmoid:
+        for(size_t i=0;i<N;++i) {
+            float sig=1.f/(1.f+std::exp(-input[i]));
+            grad_input[i]=grad_output[i]*sig*(1.f-sig);
+        }
+        break;
+    case None:
+    default:
+        memcpy(grad_input, grad_output, N*sizeof(float));
+    }
+}
+
+} // namespace dl
+
+// ===== Conv2DCPU implementation =====
+namespace dl {
+
+Conv2DCPU::Conv2DCPU(int in_channels, int out_channels, int kernel_size, int stride, int padding)
+    : Cin_(in_channels), Cout_(out_channels), K_(kernel_size), stride_(stride), padding_(padding),
+      weight_(out_channels * in_channels * kernel_size * kernel_size), bias_(out_channels)
 {
-    if (kernel_size != 3) {
-        throw std::runtime_error("Conv2D: hiện tại chỉ hỗ trợ kernel_size = 3");
-    }
-
-    // Kaiming (He) normal initialization suitable for ReLU activations.
-    auto options = torch::TensorOptions().device(device).dtype(torch::kFloat32);
-    const double fan_in = static_cast<double>(in_channels * kernel_size * kernel_size);
-    const double std = std::sqrt(2.0 / std::max(1.0, fan_in));
-
-    weight_ = torch::randn(
-        {out_channels, in_channels, kernel_size, kernel_size},
-        options
-    ) * static_cast<float>(std);
-
-    bias_ = torch::zeros({out_channels}, options);
+    // Xavier (Glorot) uniform init for conv weights, bias = 0
+    std::mt19937 gen(42);
+    int kernel_area = K_ * K_;
+    float denom = static_cast<float>(in_channels * kernel_area + out_channels * kernel_area);
+    float limit = std::sqrt(6.0f / std::max(1.0f, denom));
+    std::uniform_real_distribution<float> dist(-limit, limit);
+    for (auto &w : weight_) w = dist(gen);
+    for (auto &b : bias_) b = 0.0f;
 }
 
-torch::Tensor Conv2D::forward(const torch::Tensor& input) const {
-    if (!input.device().is_cpu()) {
-        throw std::runtime_error("Conv2D::forward (CPU): input must be on CPU");
-    }
-    if (!weight_.device().is_cpu() || !bias_.device().is_cpu()) {
-        throw std::runtime_error("Conv2D::forward (CPU): weights/bias must be on CPU");
-    }
-
-    // Dùng PyTorch built-in conv2d (tối ưu với MKL/OpenBLAS)
-    return torch::nn::functional::conv2d(
-        input,
-        weight_,
-        torch::nn::functional::Conv2dFuncOptions()
-            .bias(bias_)
-            .stride(stride_)
-            .padding(padding_)
-    );
+void Conv2DCPU::forward(const float* input, float* output, size_t N, int H, int W) const {
+    conv2d_forward_cpu(input, weight_.data(), bias_.data(), output,
+                       static_cast<int>(N), Cin_, H, W, Cout_, K_, stride_, padding_);
 }
 
-// ===================== ReLU (CPU) =====================
+void Conv2DCPU::backward(const float* input, const float* grad_output, float* grad_input,
+                         float learning_rate, size_t N, int H, int W) {
+    std::vector<float> grad_weight(weight_.size());
+    std::vector<float> grad_bias(Cout_);
+    conv2d_backward_cpu(input, weight_.data(), grad_output, grad_input,
+                        grad_weight.data(), grad_bias.data(),
+                        static_cast<int>(N), Cin_, H, W, Cout_, K_, stride_, padding_);
+        const char* dbg_env = std::getenv("CHECK_GRAD");
+        bool do_dbg = dbg_env && dbg_env[0];
+        double w_norm_before = 0.0, b_norm_before = 0.0;
+        double gw_norm = 0.0, gb_norm = 0.0;
+        if (do_dbg) {
+            for (size_t i = 0; i < weight_.size(); ++i) w_norm_before += static_cast<double>(weight_[i]) * weight_[i];
+            for (size_t i = 0; i < bias_.size(); ++i) b_norm_before += static_cast<double>(bias_[i]) * bias_[i];
+            for (size_t i = 0; i < grad_weight.size(); ++i) gw_norm += static_cast<double>(grad_weight[i]) * grad_weight[i];
+            for (size_t i = 0; i < grad_bias.size(); ++i) gb_norm += static_cast<double>(grad_bias[i]) * grad_bias[i];
+            w_norm_before = std::sqrt(w_norm_before);
+            b_norm_before = std::sqrt(b_norm_before);
+            gw_norm = std::sqrt(gw_norm);
+            gb_norm = std::sqrt(gb_norm);
+            std::cerr << "[DEBUG] Conv2DCPU::backward PRE update grads_norm=" << gw_norm << " bias_grads_norm=" << gb_norm
+                      << " weights_norm=" << w_norm_before << " bias_norm=" << b_norm_before << "\n";
+        }
 
-torch::Tensor relu_cpu(const torch::Tensor& input) {
-    if (!input.device().is_cpu()) {
-        throw std::runtime_error("relu_cpu: input must be on CPU");
-    }
-    if (input.scalar_type() != torch::kFloat32) {
-        throw std::runtime_error("relu_cpu: only float32 supported");
-    }
+        // Apply update using summed gradients (match GPU semantics)
+        for (size_t i = 0; i < bias_.size(); ++i) bias_[i] -= static_cast<float>(learning_rate * grad_bias[i]);
+        for (size_t i = 0; i < weight_.size(); ++i) weight_[i] -= static_cast<float>(learning_rate * grad_weight[i]);
 
-    auto x = input.contiguous();
-    auto y = torch::empty_like(x);
-
-    const auto numel = x.numel();
-    const float* x_ptr = x.data_ptr<float>();
-    float* y_ptr       = y.data_ptr<float>();
-
-    for (int64_t i = 0; i < numel; ++i) {
-        float v = x_ptr[i];
-        y_ptr[i] = v > 0.0f ? v : 0.0f;
-    }
-
-    return y;
+        if (do_dbg) {
+            double w_norm_after = 0.0, b_norm_after = 0.0;
+            for (size_t i = 0; i < weight_.size(); ++i) w_norm_after += static_cast<double>(weight_[i]) * weight_[i];
+            for (size_t i = 0; i < bias_.size(); ++i) b_norm_after += static_cast<double>(bias_[i]) * bias_[i];
+            w_norm_after = std::sqrt(w_norm_after);
+            b_norm_after = std::sqrt(b_norm_after);
+            std::cerr << "[DEBUG] Conv2DCPU::backward POST update weights_norm=" << w_norm_after << " bias_norm=" << b_norm_after
+                      << " (delta_w=" << (w_norm_after - w_norm_before) << ")\n";
+        }
 }
 
-torch::Tensor relu_backward_cpu(const torch::Tensor& grad_output,
-                                const torch::Tensor& relu_output) {
-    if (!grad_output.device().is_cpu() || !relu_output.device().is_cpu()) {
-        throw std::runtime_error("relu_backward_cpu: tensors must be on CPU");
-    }
-    auto go = grad_output.contiguous();
-    auto y  = relu_output.contiguous();
-
-    if (!go.sizes().equals(y.sizes())) {
-        throw std::runtime_error("relu_backward_cpu: grad_output and relu_output size mismatch");
-    }
-
-    torch::Tensor grad_input = torch::empty_like(go);
-
-    const float* go_ptr = go.data_ptr<float>();
-    const float* y_ptr  = y.data_ptr<float>();
-    float* gi_ptr       = grad_input.data_ptr<float>();
-
-    const auto numel = go.numel();
-    for (int64_t i = 0; i < numel; ++i) {
-        // derivative=1 if y>0, else 0
-        gi_ptr[i] = (y_ptr[i] > 0.0f) ? go_ptr[i] : 0.0f;
-    }
-
-    return grad_input;
+void Conv2DCPU::save(const std::string& path) const {
+    std::ofstream f(path, std::ios::binary);
+    if (!f) return;
+    f.write(reinterpret_cast<const char*>(&Cin_), sizeof(Cin_));
+    f.write(reinterpret_cast<const char*>(&Cout_), sizeof(Cout_));
+    f.write(reinterpret_cast<const char*>(&K_), sizeof(K_));
+    f.write(reinterpret_cast<const char*>(weight_.data()), weight_.size()*sizeof(float));
+    f.write(reinterpret_cast<const char*>(bias_.data()), bias_.size()*sizeof(float));
 }
 
-// ===================== MaxPool 2x2 (CPU) =====================
+void Conv2DCPU::load(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return;
+    int cin=0, cout=0, k=0;
+    f.read(reinterpret_cast<char*>(&cin), sizeof(cin));
+    f.read(reinterpret_cast<char*>(&cout), sizeof(cout));
+    f.read(reinterpret_cast<char*>(&k), sizeof(k));
+    Cin_ = cin; Cout_ = cout; K_ = k;
+    weight_.resize(static_cast<size_t>(Cout_) * Cin_ * K_ * K_);
+    bias_.resize(static_cast<size_t>(Cout_));
+    f.read(reinterpret_cast<char*>(weight_.data()), weight_.size()*sizeof(float));
+    f.read(reinterpret_cast<char*>(bias_.data()), bias_.size()*sizeof(float));
+}
 
-torch::Tensor maxpool2d_2x2_cpu(const torch::Tensor& input) {
-    if (!input.device().is_cpu()) {
-        throw std::runtime_error("maxpool2d_2x2_cpu: input must be on CPU");
-    }
-    if (input.dim() != 4) {
-        throw std::runtime_error("maxpool2d_2x2_cpu: input must be 4D [N, C, H, W]");
-    }
+// ===== MaxPool2DCPU implementation =====
+MaxPool2DCPU::MaxPool2DCPU(int kernel, int stride) : k_(kernel), s_(stride) {}
 
-    auto x = input.contiguous();
-    const int64_t N = x.size(0);
-    const int64_t C = x.size(1);
-    const int64_t H = x.size(2);
-    const int64_t W = x.size(3);
-
-    const int64_t H_out = H / 2;
-    const int64_t W_out = W / 2;
-
-    torch::Tensor output = torch::empty(
-        {N, C, H_out, W_out},
-        x.options()
-    );
-
-    const float* x_ptr = x.data_ptr<float>();
-    float* y_ptr       = output.data_ptr<float>();
-
-    auto idx_in = [=](int64_t n, int64_t c, int64_t h, int64_t w_) {
-        return ((n * C + c) * H + h) * W + w_;
-    };
-    auto idx_out = [=](int64_t n, int64_t c, int64_t h, int64_t w_) {
-        return ((n * C + c) * H_out + h) * W_out + w_;
-    };
-
-    for (int64_t n = 0; n < N; ++n) {
-        for (int64_t c = 0; c < C; ++c) {
-            for (int64_t oh = 0; oh < H_out; ++oh) {
-                for (int64_t ow = 0; ow < W_out; ++ow) {
-                    int64_t h0 = oh * 2;
-                    int64_t w0 = ow * 2;
-
-                    float m = x_ptr[idx_in(n, c, h0,     w0    )];
-                    m = std::max(m, x_ptr[idx_in(n, c, h0,     w0 + 1)]);
-                    m = std::max(m, x_ptr[idx_in(n, c, h0 + 1, w0    )]);
-                    m = std::max(m, x_ptr[idx_in(n, c, h0 + 1, w0 + 1)]);
-
-                    y_ptr[idx_out(n, c, oh, ow)] = m;
+void MaxPool2DCPU::forward(const float* input, float* output, size_t N, int C, int H, int W) {
+    int Hout = (H - k_) / s_ + 1;
+    int Wout = (W - k_) / s_ + 1;
+    last_Hout_ = Hout; last_Wout_ = Wout;
+    last_argmax_.assign(static_cast<size_t>(N) * C * Hout * Wout, -1);
+    for (int n = 0; n < static_cast<int>(N); ++n) {
+        for (int c = 0; c < C; ++c) {
+            for (int oh = 0; oh < Hout; ++oh) {
+                for (int ow = 0; ow < Wout; ++ow) {
+                    float best = -std::numeric_limits<float>::infinity();
+                    int best_idx = -1;
+                    int ih0 = oh * s_;
+                    int iw0 = ow * s_;
+                    for (int kh = 0; kh < k_; ++kh) {
+                        for (int kw = 0; kw < k_; ++kw) {
+                            int ih = ih0 + kh;
+                            int iw = iw0 + kw;
+                            int in_idx = ((n * C + c) * H + ih) * W + iw;
+                            float v = input[in_idx];
+                            if (v > best) { best = v; best_idx = in_idx; }
+                        }
+                    }
+                    int out_idx = ((n * C + c) * Hout + oh) * Wout + ow;
+                    output[out_idx] = best;
+                    last_argmax_[out_idx] = best_idx;
                 }
             }
         }
     }
-
-    return output;
 }
 
-torch::Tensor maxpool2d_2x2_backward_cpu(const torch::Tensor& grad_output,
-                                         const torch::Tensor& input) {
-    if (!grad_output.device().is_cpu() || !input.device().is_cpu()) {
-        throw std::runtime_error("maxpool2d_2x2_backward_cpu: tensors must be on CPU");
+void MaxPool2DCPU::backward(const float* grad_output, float* grad_input, size_t N, int C, int H, int W) {
+    std::fill(grad_input, grad_input + static_cast<size_t>(N) * C * H * W, 0.0f);
+    int Hout = last_Hout_, Wout = last_Wout_;
+    size_t out_size = static_cast<size_t>(N) * C * Hout * Wout;
+    for (size_t idx = 0; idx < out_size; ++idx) {
+        int in_idx = last_argmax_[idx];
+        if (in_idx >= 0) grad_input[static_cast<size_t>(in_idx)] += grad_output[idx];
     }
-    auto go = grad_output.contiguous();
-    auto x  = input.contiguous();
+}
 
-    const int64_t N = x.size(0);
-    const int64_t C = x.size(1);
-    const int64_t H = x.size(2);
-    const int64_t W = x.size(3);
+// ===== UpSample2DCPU implementation (nearest) =====
+UpSample2DCPU::UpSample2DCPU(int scale) : scale_(scale) {}
 
-    const int64_t H_out = go.size(2);
-    const int64_t W_out = go.size(3);
-
-    if (H_out * 2 != H || W_out * 2 != W) {
-        throw std::runtime_error("maxpool2d_2x2_backward_cpu: shape mismatch");
-    }
-
-    torch::Tensor grad_input = torch::zeros_like(x);
-
-    const float* x_ptr  = x.data_ptr<float>();
-    const float* go_ptr = go.data_ptr<float>();
-    float* gi_ptr       = grad_input.data_ptr<float>();
-
-    auto idx_in = [=](int64_t n, int64_t c, int64_t h, int64_t w_) {
-        return ((n * C + c) * H + h) * W + w_;
-    };
-    auto idx_out = [=](int64_t n, int64_t c, int64_t h, int64_t w_) {
-        return ((n * C + c) * H_out + h) * W_out + w_;
-    };
-
-    for (int64_t n = 0; n < N; ++n) {
-        for (int64_t c = 0; c < C; ++c) {
-            for (int64_t oh = 0; oh < H_out; ++oh) {
-                for (int64_t ow = 0; ow < W_out; ++ow) {
-                    int64_t h0 = oh * 2;
-                    int64_t w0 = ow * 2;
-
-                    // Tìm vị trí max trong 4 ô
-                    float v00 = x_ptr[idx_in(n, c, h0,     w0    )];
-                    float v01 = x_ptr[idx_in(n, c, h0,     w0 + 1)];
-                    float v10 = x_ptr[idx_in(n, c, h0 + 1, w0    )];
-                    float v11 = x_ptr[idx_in(n, c, h0 + 1, w0 + 1)];
-
-                    float m = v00;
-                    int64_t mh = h0;
-                    int64_t mw = w0;
-
-                    if (v01 > m) { m = v01; mh = h0;     mw = w0 + 1; }
-                    if (v10 > m) { m = v10; mh = h0 + 1; mw = w0;     }
-                    if (v11 > m) { m = v11; mh = h0 + 1; mw = w0 + 1; }
-
-                    float g = go_ptr[idx_out(n, c, oh, ow)];
-                    gi_ptr[idx_in(n, c, mh, mw)] += g;
+void UpSample2DCPU::forward(const float* input, float* output, size_t N, int C, int H, int W) {
+    int Hout = H * scale_;
+    int Wout = W * scale_;
+    for (int n = 0; n < static_cast<int>(N); ++n) {
+        for (int c = 0; c < C; ++c) {
+            for (int oh = 0; oh < Hout; ++oh) {
+                int ih = oh / scale_;
+                for (int ow = 0; ow < Wout; ++ow) {
+                    int iw = ow / scale_;
+                    int in_idx = ((n * C + c) * H + ih) * W + iw;
+                    int out_idx = ((n * C + c) * Hout + oh) * Wout + ow;
+                    output[out_idx] = input[in_idx];
                 }
             }
         }
     }
-
-    return grad_input;
 }
 
-// ===================== Upsampling 2x (nearest, CPU) =====================
-
-torch::Tensor upsample_nearest2x_cpu(const torch::Tensor& input) {
-    if (!input.device().is_cpu()) {
-        throw std::runtime_error("upsample_nearest2x_cpu: input must be on CPU");
-    }
-    if (input.dim() != 4) {
-        throw std::runtime_error("upsample_nearest2x_cpu: input must be 4D [N, C, H, W]");
-    }
-
-    auto x = input.contiguous();
-    const int64_t N = x.size(0);
-    const int64_t C = x.size(1);
-    const int64_t H = x.size(2);
-    const int64_t W = x.size(3);
-
-    const int64_t H_out = H * 2;
-    const int64_t W_out = W * 2;
-
-    torch::Tensor output = torch::empty(
-        {N, C, H_out, W_out},
-        x.options()
-    );
-
-    const float* x_ptr = x.data_ptr<float>();
-    float* y_ptr       = output.data_ptr<float>();
-
-    auto idx_in = [=](int64_t n, int64_t c, int64_t h, int64_t w_) {
-        return ((n * C + c) * H + h) * W + w_;
-    };
-    auto idx_out = [=](int64_t n, int64_t c, int64_t h, int64_t w_) {
-        return ((n * C + c) * H_out + h) * W_out + w_;
-    };
-
-    for (int64_t n = 0; n < N; ++n) {
-        for (int64_t c = 0; c < C; ++c) {
-            for (int64_t oh = 0; oh < H_out; ++oh) {
-                for (int64_t ow = 0; ow < W_out; ++ow) {
-                    int64_t ih = oh / 2;
-                    int64_t iw = ow / 2;
-
-                    float v = x_ptr[idx_in(n, c, ih, iw)];
-                    y_ptr[idx_out(n, c, oh, ow)] = v;
+void UpSample2DCPU::backward(const float* grad_output, float* grad_input, size_t N, int C, int H, int W) {
+    int Hout = H * scale_;
+    int Wout = W * scale_;
+    std::fill(grad_input, grad_input + static_cast<size_t>(N) * C * H * W, 0.0f);
+    for (int n = 0; n < static_cast<int>(N); ++n) {
+        for (int c = 0; c < C; ++c) {
+            for (int oh = 0; oh < Hout; ++oh) {
+                int ih = oh / scale_;
+                for (int ow = 0; ow < Wout; ++ow) {
+                    int iw = ow / scale_;
+                    int in_idx = ((n * C + c) * H + ih) * W + iw;
+                    int out_idx = ((n * C + c) * Hout + oh) * Wout + ow;
+                    grad_input[in_idx] += grad_output[out_idx];
                 }
             }
         }
     }
-
-    return output;
-}
-
-torch::Tensor upsample_nearest2x_backward_cpu(const torch::Tensor& grad_output,
-                                              const torch::Tensor& input) {
-    if (!grad_output.device().is_cpu() || !input.device().is_cpu()) {
-        throw std::runtime_error("upsample_nearest2x_backward_cpu: tensors must be on CPU");
-    }
-    auto go = grad_output.contiguous();
-    auto x  = input.contiguous();
-
-    const int64_t N = x.size(0);
-    const int64_t C = x.size(1);
-    const int64_t H = x.size(2);
-    const int64_t W = x.size(3);
-
-    const int64_t H_out = go.size(2);
-    const int64_t W_out = go.size(3);
-
-    if (H_out != H * 2 || W_out != W * 2) {
-        throw std::runtime_error("upsample_nearest2x_backward_cpu: shape mismatch");
-    }
-
-    torch::Tensor grad_input = torch::zeros_like(x);
-
-    const float* go_ptr = go.data_ptr<float>();
-    float* gi_ptr       = grad_input.data_ptr<float>();
-
-    auto idx_in = [=](int64_t n, int64_t c, int64_t h, int64_t w_) {
-        return ((n * C + c) * H + h) * W + w_;
-    };
-    auto idx_out = [=](int64_t n, int64_t c, int64_t h, int64_t w_) {
-        return ((n * C + c) * H_out + h) * W_out + w_;
-    };
-
-    // Mỗi pixel input nhận grad từ 4 pixel output tương ứng
-    for (int64_t n = 0; n < N; ++n) {
-        for (int64_t c = 0; c < C; ++c) {
-            for (int64_t ih = 0; ih < H; ++ih) {
-                for (int64_t iw = 0; iw < W; ++iw) {
-                    float sum = 0.0f;
-                    int64_t oh0 = ih * 2;
-                    int64_t ow0 = iw * 2;
-
-                    sum += go_ptr[idx_out(n, c, oh0,     ow0    )];
-                    sum += go_ptr[idx_out(n, c, oh0,     ow0 + 1)];
-                    sum += go_ptr[idx_out(n, c, oh0 + 1, ow0    )];
-                    sum += go_ptr[idx_out(n, c, oh0 + 1, ow0 + 1)];
-
-                    gi_ptr[idx_in(n, c, ih, iw)] = sum;
-                }
-            }
-        }
-    }
-
-    return grad_input;
-}
-
-// ===================== MSE Loss (CPU) =====================
-
-torch::Tensor mse_loss_cpu(const torch::Tensor& output,
-                           const torch::Tensor& target) {
-    if (!output.device().is_cpu() || !target.device().is_cpu()) {
-        throw std::runtime_error("mse_loss_cpu: tensors must be on CPU");
-    }
-    if (!output.sizes().equals(target.sizes())) {
-        throw std::runtime_error("mse_loss_cpu: output and target must have same shape");
-    }
-
-    torch::Tensor diff = output - target;
-    torch::Tensor sq   = diff.mul(diff);
-    torch::Tensor loss = sq.mean();
-    return loss;
-}
-
-torch::Tensor mse_loss_backward_cpu(const torch::Tensor& output,
-                                    const torch::Tensor& target) {
-    if (!output.device().is_cpu() || !target.device().is_cpu()) {
-        throw std::runtime_error("mse_loss_backward_cpu: tensors must be on CPU");
-    }
-    if (!output.sizes().equals(target.sizes())) {
-        throw std::runtime_error("mse_loss_backward_cpu: output and target must have same shape");
-    }
-
-    auto diff = (output - target).contiguous();
-    torch::Tensor grad = torch::empty_like(diff);
-
-    float* g_ptr      = grad.data_ptr<float>();
-    const float* d_ptr = diff.data_ptr<float>();
-
-    const auto numel = diff.numel();
-    float scale = 2.0f / static_cast<float>(numel);
-    for (int64_t i = 0; i < numel; ++i) {
-        g_ptr[i] = scale * d_ptr[i]; // dL/dOutput
-    }
-
-    return grad;
 }
 
 } // namespace dl

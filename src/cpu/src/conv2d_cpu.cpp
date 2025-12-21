@@ -1,172 +1,88 @@
 #include "dl/conv2d_cpu.h"
-#include <cassert>
-#include <stdexcept>
+#include <cstring>
+#include <algorithm>
 
 namespace dl {
 
-// ===================== FORWARD =====================
-
-torch::Tensor conv2d_cpu(const torch::Tensor& input,
-                         const torch::Tensor& weight,
-                         const torch::Tensor& bias,
-                         int stride,
-                         int padding) {
-    // Đảm bảo float32 & 4D
-    assert(input.dim() == 4);
-    assert(weight.dim() == 4);
-    assert(bias.dim() == 1);
-
-    auto x = input.contiguous();
-    auto w = weight.contiguous();
-    auto b = bias.contiguous();
-
-    const int64_t N     = x.size(0);
-    const int64_t C_in  = x.size(1);
-    const int64_t H     = x.size(2);
-    const int64_t W     = x.size(3);
-
-    const int64_t C_out = w.size(0);
-    const int64_t K     = w.size(2); // giả định KxK
-
-    const int64_t H_out = (H + 2 * padding - K) / stride + 1;
-    const int64_t W_out = (W + 2 * padding - K) / stride + 1;
-
-    torch::Tensor output = torch::zeros({N, C_out, H_out, W_out}, x.options());
-
-    const float* x_ptr = x.data_ptr<float>();
-    const float* w_ptr = w.data_ptr<float>();
-    const float* b_ptr = b.data_ptr<float>();
-    float* y_ptr       = output.data_ptr<float>();
-
-    auto idx_in = [=](int64_t n, int64_t c, int64_t h, int64_t w_) {
-        return ((n * C_in + c) * H + h) * W + w_;
-    };
-    auto idx_w = [=](int64_t co, int64_t ci, int64_t kh, int64_t kw) {
-        return ((co * C_in + ci) * K + kh) * K + kw;
-    };
-    auto idx_out = [=](int64_t n, int64_t co, int64_t h, int64_t w_) {
-        return ((n * C_out + co) * H_out + h) * W_out + w_;
-    };
-
-    for (int64_t n = 0; n < N; ++n) {
-        for (int64_t co = 0; co < C_out; ++co) {
-            for (int64_t oh = 0; oh < H_out; ++oh) {
-                for (int64_t ow = 0; ow < W_out; ++ow) {
-
-                    float sum = b_ptr[co];
-
-                    const int64_t ih_center = oh * stride - padding;
-                    const int64_t iw_center = ow * stride - padding;
-
-                    for (int64_t ci = 0; ci < C_in; ++ci) {
-                        for (int64_t kh = 0; kh < K; ++kh) {
-                            for (int64_t kw = 0; kw < K; ++kw) {
-                                int64_t ih = ih_center + kh;
-                                int64_t iw = iw_center + kw;
-
-                                if (ih < 0 || ih >= H || iw < 0 || iw >= W) {
-                                    continue;
-                                }
-
-                                int64_t in_i = idx_in(n, ci, ih, iw);
-                                int64_t w_i  = idx_w(co, ci, kh, kw);
-
-                                sum += x_ptr[in_i] * w_ptr[w_i];
-                            }
-                        }
-                    }
-
-                    int64_t out_i = idx_out(n, co, oh, ow);
-                    y_ptr[out_i] = sum;
-                }
-            }
-        }
-    }
-
-    return output;
+// Utility: index flatten for [N, C, H, W]
+inline int idx4(int n, int c, int h, int w, int C, int H, int W) {
+    return ((n * C + c) * H + h) * W + w;
+}
+// Utility: index flatten for [Cout, Cin, K, K]
+inline int idx4w(int co, int ci, int kh, int kw, int Cin, int K) {
+    return ((co * Cin + ci) * K + kh) * K + kw;
 }
 
-// ===================== BACKWARD =====================
+void conv2d_forward_cpu(const float* input,
+                        const float* weight,
+                        const float* bias,
+                        float* output,
+                        int N, int Cin, int H, int W,
+                        int Cout, int K, int stride, int padding) {
+    int H_out = (H + 2 * padding - K) / stride + 1;
+    int W_out = (W + 2 * padding - K) / stride + 1;
+    std::fill(output, output + N * Cout * H_out * W_out, 0.0f);
+    for (int n = 0; n < N; ++n) {
+        for (int co = 0; co < Cout; ++co) {
+            for (int oh = 0; oh < H_out; ++oh) {
+                for (int ow = 0; ow < W_out; ++ow) {
+                    float sum = bias ? bias[co] : 0.f;
+                    int ih_center = oh * stride - padding;
+                    int iw_center = ow * stride - padding;
+                    for (int ci = 0; ci < Cin; ++ci) {
+                        for (int kh = 0; kh < K; ++kh) {
+                            for (int kw = 0; kw < K; ++kw) {
+                                int ih = ih_center + kh;
+                                int iw = iw_center + kw;
+                                if (ih < 0 || ih >= H || iw < 0 || iw >= W) continue;
+                                int in_idx = idx4(n, ci, ih, iw, Cin, H, W);
+                                int w_idx  = idx4w(co, ci, kh, kw, Cin, K);
+                                sum += input[in_idx] * weight[w_idx];
+                            }
+                        }
+                    }
+                    int out_idx = idx4(n, co, oh, ow, Cout, H_out, W_out);
+                    output[out_idx] = sum;
+                }
+            }
+        }
+    }
+}
 
-Conv2DGrad conv2d_backward_cpu(const torch::Tensor& input,
-                               const torch::Tensor& weight,
-                               const torch::Tensor& grad_output,
-                               int stride,
-                               int padding) {
-    auto x   = input.contiguous();
-    auto w   = weight.contiguous();
-    auto gy  = grad_output.contiguous();
-
-    const int64_t N     = x.size(0);
-    const int64_t C_in  = x.size(1);
-    const int64_t H     = x.size(2);
-    const int64_t W     = x.size(3);
-
-    const int64_t C_out = w.size(0);
-    const int64_t K     = w.size(2);
-
-    const int64_t H_out = gy.size(2);
-    const int64_t W_out = gy.size(3);
-
-    Conv2DGrad grads;
-    grads.grad_input  = torch::zeros_like(x);       // [N, C_in, H, W]
-    grads.grad_weight = torch::zeros_like(w);       // [C_out, C_in, K, K]
-    grads.grad_bias   = torch::zeros({C_out},      // [C_out]
-                                     w.options());
-
-    const float* x_ptr    = x.data_ptr<float>();
-    const float* w_ptr    = w.data_ptr<float>();
-    const float* gy_ptr   = gy.data_ptr<float>();
-    float* gx_ptr         = grads.grad_input.data_ptr<float>();
-    float* gw_ptr         = grads.grad_weight.data_ptr<float>();
-    float* gb_ptr         = grads.grad_bias.data_ptr<float>();
-
-    auto idx_in = [=](int64_t n, int64_t c, int64_t h, int64_t w_) {
-        return ((n * C_in + c) * H + h) * W + w_;
-    };
-    auto idx_w = [=](int64_t co, int64_t ci, int64_t kh, int64_t kw) {
-        return ((co * C_in + ci) * K + kh) * K + kw;
-    };
-    auto idx_out = [=](int64_t n, int64_t co, int64_t h, int64_t w_) {
-        return ((n * C_out + co) * H_out + h) * W_out + w_;
-    };
-
-    // Loop theo output, phân phối gradient về input + weight + bias
-    for (int64_t n = 0; n < N; ++n) {
-        for (int64_t co = 0; co < C_out; ++co) {
-            for (int64_t oh = 0; oh < H_out; ++oh) {
-                for (int64_t ow = 0; ow < W_out; ++ow) {
-
-                    int64_t out_i = idx_out(n, co, oh, ow);
-                    float g = gy_ptr[out_i]; // dL/dY[n,co,oh,ow]
-
-                    // bias grad
-                    gb_ptr[co] += g;
-
-                    const int64_t ih_center = oh * stride - padding;
-                    const int64_t iw_center = ow * stride - padding;
-
-                    for (int64_t ci = 0; ci < C_in; ++ci) {
-                        for (int64_t kh = 0; kh < K; ++kh) {
-                            for (int64_t kw = 0; kw < K; ++kw) {
-                                int64_t ih = ih_center + kh;
-                                int64_t iw = iw_center + kw;
-
-                                if (ih < 0 || ih >= H || iw < 0 || iw >= W) {
-                                    continue;
-                                }
-
-                                int64_t in_i = idx_in(n, ci, ih, iw);
-                                int64_t w_i  = idx_w(co, ci, kh, kw);
-
-                                float x_val = x_ptr[in_i];
-                                float w_val = w_ptr[w_i];
-
-                                // grad w
-                                gw_ptr[w_i] += g * x_val;
-
-                                // grad x
-                                gx_ptr[in_i] += g * w_val;
+void conv2d_backward_cpu(const float* input,
+                         const float* weight,
+                         const float* grad_output,
+                         float* grad_input,
+                         float* grad_weight,
+                         float* grad_bias,
+                         int N, int Cin, int H, int W,
+                         int Cout, int K, int stride, int padding) {
+    int H_out = (H + 2 * padding - K) / stride + 1;
+    int W_out = (W + 2 * padding - K) / stride + 1;
+    std::fill(grad_input, grad_input + N * Cin * H * W, 0.0f);
+    std::fill(grad_weight, grad_weight + Cout * Cin * K * K, 0.0f);
+    std::fill(grad_bias, grad_bias + Cout, 0.0f);
+    for (int n = 0; n < N; ++n) {
+        for (int co = 0; co < Cout; ++co) {
+            for (int oh = 0; oh < H_out; ++oh) {
+                for (int ow = 0; ow < W_out; ++ow) {
+                    int out_idx = idx4(n, co, oh, ow, Cout, H_out, W_out);
+                    float go = grad_output[out_idx];
+                        grad_bias[co] += go; // Summing gradients for bias
+                        int ih_center = oh * stride - padding; // Input height center
+                        int iw_center = ow * stride - padding; // Input width center
+                    for (int ci = 0; ci < Cin; ++ci) {
+                        for (int kh = 0; kh < K; ++kh) {
+                            for (int kw = 0; kw < K; ++kw) {
+                                int ih = ih_center + kh;
+                                int iw = iw_center + kw;
+                                if (ih < 0 || ih >= H || iw < 0 || iw >= W) continue;
+                                int in_idx = idx4(n, ci, ih, iw, Cin, H, W);
+                                int w_idx  = idx4w(co, ci, kh, kw, Cin, K);
+                                // grad weight
+                                    grad_weight[w_idx] += input[in_idx] * go; // Summing gradients for weight
+                                // grad input
+                                grad_input[in_idx] += weight[w_idx] * go;
                             }
                         }
                     }
@@ -174,8 +90,6 @@ Conv2DGrad conv2d_backward_cpu(const torch::Tensor& input,
             }
         }
     }
-
-    return grads;
 }
 
 } // namespace dl

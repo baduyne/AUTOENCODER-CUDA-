@@ -3,7 +3,7 @@
 
 
 // --- HÀM MAIN ---
-int main() {
+int gpu_phase_main(int argc, char** argv) {
 
     int batch_size = 32;
     int epochs = 2;
@@ -153,3 +153,5 @@ int main() {
     printf("\nTraining Finished.\n");
     return 0;
 }
+
+// Note: no standalone `main` here; use root-level launcher to call `gpu_phase_main`.
