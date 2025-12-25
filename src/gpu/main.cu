@@ -232,7 +232,7 @@ void extract_features_dataset(
 
 
 
-int main()
+int gpu_phase_main(int argc, char** argv)
 {
 
     int batch_size = 64;
@@ -248,11 +248,11 @@ int main()
     std::vector<std::vector<float>> train_images;
     std::vector<int> train_labels;
     std::vector<std::string> train_files = {
-        "../../data/cifar-10-batches-bin/data_batch_1.bin",
-        "../../data/cifar-10-batches-bin/data_batch_2.bin",
-        "../../data/cifar-10-batches-bin/data_batch_3.bin",
-        "../../data/cifar-10-batches-bin/data_batch_4.bin",
-        "../../data/cifar-10-batches-bin/data_batch_5.bin"
+        "data/cifar-10-batches-bin/data_batch_1.bin",
+        "data/cifar-10-batches-bin/data_batch_2.bin",
+        "data/cifar-10-batches-bin/data_batch_3.bin",
+        "data/cifar-10-batches-bin/data_batch_4.bin",
+        "data/cifar-10-batches-bin/data_batch_5.bin"
     };
     if (!load_cifar10_dataset(train_files, train_images, train_labels, true)) 
     {  
@@ -266,7 +266,7 @@ int main()
     // Example to load test data (10,000 images)
     std::vector<std::vector<float>> test_images;
     std::vector<int> test_labels;
-    std::vector<std::string> test_files = {"../../data/cifar-10-batches-bin/test_batch.bin"};
+    std::vector<std::string> test_files = {"data/cifar-10-batches-bin/test_batch.bin"};
     if (!load_cifar10_dataset(test_files, test_images, test_labels, false)) 
     {  
         printf("Error loading test data\n");
@@ -328,4 +328,5 @@ int main()
     // Save weights after finishing
     // gpu_model.save_weights("./weights/model.bin");
     // training 
+    return 0;
 }

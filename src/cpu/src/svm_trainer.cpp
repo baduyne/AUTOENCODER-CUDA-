@@ -47,7 +47,7 @@ svm_model* SVMTrainer::train(const std::vector<std::vector<double>>& features,
                         : 1.0 / static_cast<double>(num_feat); // gamma=auto
     param.coef0       = 0;
     param.nu          = 0.5;
-    param.cache_size  = 200;   // MB
+    param.cache_size  = 4000;   // MB
     param.C           = config.C;   // C = 10
     param.eps         = 1e-3;
     param.p           = 0.1;
