@@ -35,6 +35,11 @@ references
 cudnn-local-repo-ubuntu2404-9.17.0_1.0-1_amd64.deb
 /src/gpu/weights/model*
 data/*
+
+# Ignore CSV and binary dataset files and CUDA repo packages
+*.csv
+*.bin
+cuda-repo-wsl-ubuntu*.deb
 src/gpu/eval_log.csv
 src/gpu/train_log.csv
 # Build output
