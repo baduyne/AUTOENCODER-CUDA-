@@ -54,7 +54,11 @@ if (USE_CUDA)
     add_definitions(-DUSE_CUDA)
     set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-    target_sources(dl_core PRIVATE
+    set_property(TARGET dl_core PROPERTY CUDA_ARCHITECTURES 86)
+    target_sources(dl_core PRIVATE 
+        src/gpu/gpu_main_wrapper.cu
+        src/gpu/gpu_autoencoder.cu
+        src/gpu/utils.cpp
         src/gpu/main.cu
     )
 else()

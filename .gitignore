@@ -4,7 +4,6 @@ build/
 # Dataset and large data files
 data/
 
-third_party/
 # CMake and build system files
 CMakeFiles/
 CMakeCache.txt
@@ -44,6 +43,11 @@ cudnn-local-repo-ubuntu2404-9.17.0_1.0-1_amd64.deb
 cuda-repo-wsl-ubuntu*
 
 data/*
+
+# Ignore CSV and binary dataset files and CUDA repo packages
+*.csv
+*.bin
+cuda-repo-wsl-ubuntu*.deb
 src/gpu/eval_log.csv
 src/gpu/train_log.csv
 # Build output
@@ -52,7 +56,6 @@ build/
 # Dataset and large data files
 data/
 
-third_party/
 # CMake and build system files
 CMakeFiles/
 CMakeCache.txt
