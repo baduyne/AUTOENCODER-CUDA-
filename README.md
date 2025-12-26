@@ -36,5 +36,5 @@ cd build
 cmake .. -DUSE_CUDA=ON
 cmake --build . -j8
 cd ..
-./build/gpu_main
+./build/gpu_main --epoch=1
 '''

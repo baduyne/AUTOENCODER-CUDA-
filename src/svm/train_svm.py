@@ -7,10 +7,10 @@ import joblib
 # Parameters
 FEAT_DIM = 128 * 8 * 8
 SELECTED_LABELS = [0, 1, 2, 3, 4, 5]  
-TRAIN_FEAT_FILE = 'train_features.bin'
-TRAIN_LABEL_FILE = 'train_labels.bin'
-TEST_FEAT_FILE = 'test_features.bin'
-TEST_LABEL_FILE = 'test_labels.bin'
+TRAIN_FEAT_FILE = './extracted_feature/train_features.bin'
+TRAIN_LABEL_FILE = './extracted_feature/train_labels.bin'
+TEST_FEAT_FILE = './extracted_feature/test_features.bin'
+TEST_LABEL_FILE = './extracted_feature/test_labels.bin'
 MODEL_OUT = 'svm_model_filtered.joblib'
 
 # Load binary features & labels

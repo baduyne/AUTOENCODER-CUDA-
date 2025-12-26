@@ -1131,8 +1131,6 @@ void GPUAutoencoder::extract_features(const float* h_input, float* h_features, i
 
     while (remaining > 0) {
         int chunk = std::min(remaining, MAX_CHUNK);
-
-        printf("memory_allocated: %d, max_batch_size: %d", memory_allocated, max_batch_size);
         // Ensure device buffers are allocated for the chunk size
         allocate_device_memory(chunk);
 

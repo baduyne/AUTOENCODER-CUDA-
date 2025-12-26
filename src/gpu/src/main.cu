@@ -236,16 +236,23 @@ void extract_features_dataset(
 int gpu_phase_main(int argc, char** argv)
 {
 
-    int batch_size = 64;
-    int epochs = 10;
-    float lr = 0.001f;
-    int patience = 2;
+    Config cfg;
+    parse_args(argc, argv, cfg);
+    int batch_size = cfg.batch_size;
+    int epochs     = cfg.epochs;
+    float lr       = cfg.lr;
+    int patience   = cfg.patience;
 
+    std::string weight_path = cfg.weight_path;
+    std::string train_folder = cfg.train_folder;
+    std::string test_folder  = cfg.test_folder;
+    std::string out_folder   = cfg.output_folder;
+
+    printf("batch_size: %d, epochs: %d\n",batch_size, epochs);
     GPUAutoencoder gpu_model;
     gpu_model.initialize();
 
     // Try to load pre-trained weights
-    std::string weight_path = "./src/gpu/weight/model_gpu.bin";
     std::ifstream weight_check(weight_path);
     bool weights_loaded = false;
 
@@ -262,8 +269,6 @@ int gpu_phase_main(int argc, char** argv)
     // load dataset 
     std::vector<std::vector<float>> train_images;
     std::vector<int> train_labels;
-
-    std::string train_folder = "data/cifar-10-batches-bin";
     std::vector<std::string> train_files = load_bin_files_from_folder(train_folder);
 
     // Loại bỏ test_batch.bin ra khỏi train nếu bạn muốn tách riêng
@@ -286,7 +291,6 @@ int gpu_phase_main(int argc, char** argv)
     // Example to load test data (10,000 images)
     std::vector<std::vector<float>> test_images;
     std::vector<int> test_labels;
-    std::string test_folder = "data/cifar-10-batches-bin";
     std::vector<std::string> test_files = load_bin_files_from_folder(test_folder);
 
     // chỉ lấy file test_batch.bin
@@ -336,16 +340,17 @@ int gpu_phase_main(int argc, char** argv)
     extract_features_dataset(gpu_model, train_images, test_images, batch_size, train_feats, test_feats);
 
     // Save features and labels to binary files (row-major float32, labels int32)
-    const int FEAT_DIM = 128 * 8 * 8;
     // Train features
     {
-        std::ofstream fout("train_features.bin", std::ios::binary);
+        std::string train_features = out_folder + "/train_features.bin";
+        std::ofstream fout(train_features, std::ios::binary);
         fout.write(reinterpret_cast<const char*>(train_feats.data()), train_feats.size() * sizeof(float));
         fout.close();
     }
     // Train labels
     {
-        std::ofstream fout("train_labels.bin", std::ios::binary);
+        std::string train_labels = out_folder + "/train_labels.bin";
+        std::ofstream fout(train_labels, std::ios::binary);
         // write as int32
         for (int v : train_labels) {
             int32_t x = static_cast<int32_t>(v);
@@ -355,13 +360,15 @@ int gpu_phase_main(int argc, char** argv)
     }
     // Test features
     {
-        std::ofstream fout("test_features.bin", std::ios::binary);
+        std::string test_features = out_folder + "/test_features.bin";
+        std::ofstream fout(test_features, std::ios::binary);
         fout.write(reinterpret_cast<const char*>(test_feats.data()), test_feats.size() * sizeof(float));
         fout.close();
     }
     // Test labels
     {
-        std::ofstream fout("test_labels.bin", std::ios::binary);
+        std::string test_labels = out_folder + "/test_labels.bin";
+        std::ofstream fout(test_labels, std::ios::binary);
         for (int v : test_labels) {
             int32_t x = static_cast<int32_t>(v);
             fout.write(reinterpret_cast<const char*>(&x), sizeof(int32_t));

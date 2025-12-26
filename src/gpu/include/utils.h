@@ -6,6 +6,22 @@
 #include <iostream>
 #include <cstdint>
 
+
+struct Config {
+    std::string weight_path = "src/gpu/weight/model_gpu.bin";
+    int batch_size = 64;
+    int epochs = 20;
+    float lr = 0.001f;
+    int patience = 2;
+
+    std::string train_folder = "data/cifar-10-batches-bin";
+    std::string test_folder  = "data/cifar-10-batches-bin";
+
+    std::string output_folder = "./extracted_feature";
+};
+
+void parse_args(int argc, char** argv, Config& cfg);
+
 bool load_cifar10_images(const std::string& file_name,
                          std::vector<std::vector<float>>& images,
                          std::vector<int>& labels, int num_imgs);
