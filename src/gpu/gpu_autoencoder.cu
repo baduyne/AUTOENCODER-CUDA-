@@ -798,6 +798,7 @@ void GPUAutoencoder::allocate_device_memory(int requested_batch_size) {
 
     if (memory_allocated) {
         free_device_memory();
+        copy_weights_to_device();
     }
 
     max_batch_size = requested_batch_size;

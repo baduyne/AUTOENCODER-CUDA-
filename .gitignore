@@ -34,6 +34,14 @@ CSC14120_2025_Final Project.pdf
 references
 cudnn-local-repo-ubuntu2404-9.17.0_1.0-1_amd64.deb
 /src/gpu/weights/model*
+
+# Ignore binary and archive files
+*.bin
+*.zip
+
+# Ignore CUDA repo packages for WSL/Ubuntu
+cuda-repo-wsl-ubuntu*
+
 data/*
 
 # Ignore CSV and binary dataset files and CUDA repo packages
