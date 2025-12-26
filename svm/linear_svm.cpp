@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <iomanip>
 #include <cstring>
+#include <cmath>
 
 namespace svm {
 
@@ -315,6 +316,78 @@ void LinearSVMEvaluator::print_confusion_matrix(const EvalResult& result) {
 // =============================================================================
 
 namespace utils {
+
+NormalizationStats compute_normalization_stats(
+    const std::vector<std::vector<double>>& features)
+{
+    if (features.empty()) {
+        throw std::runtime_error("[LinearSVM] Cannot compute stats from empty features");
+    }
+
+    const int num_samples = static_cast<int>(features.size());
+    const int feature_dim = static_cast<int>(features[0].size());
+
+    NormalizationStats stats;
+    stats.feature_dim = feature_dim;
+    stats.mean.resize(feature_dim, 0.0);
+    stats.std_dev.resize(feature_dim, 0.0);
+
+    // Compute mean
+    for (const auto& sample : features) {
+        for (int j = 0; j < feature_dim; ++j) {
+            stats.mean[j] += sample[j];
+        }
+    }
+    for (int j = 0; j < feature_dim; ++j) {
+        stats.mean[j] /= num_samples;
+    }
+
+    // Compute standard deviation
+    for (const auto& sample : features) {
+        for (int j = 0; j < feature_dim; ++j) {
+            double diff = sample[j] - stats.mean[j];
+            stats.std_dev[j] += diff * diff;
+        }
+    }
+    for (int j = 0; j < feature_dim; ++j) {
+        stats.std_dev[j] = std::sqrt(stats.std_dev[j] / num_samples);
+        // Prevent division by zero for constant features
+        if (stats.std_dev[j] < 1e-10) {
+            stats.std_dev[j] = 1.0;
+        }
+    }
+
+    std::cout << "[LinearSVM] Normalization stats computed: feature_dim=" << feature_dim << std::endl;
+    return stats;
+}
+
+void normalize_features(
+    std::vector<std::vector<double>>& features,
+    const NormalizationStats& stats)
+{
+    if (features.empty()) return;
+
+    const int feature_dim = static_cast<int>(features[0].size());
+    if (feature_dim != stats.feature_dim) {
+        throw std::runtime_error("[LinearSVM] Feature dimension mismatch in normalization");
+    }
+
+    for (auto& sample : features) {
+        for (int j = 0; j < feature_dim; ++j) {
+            sample[j] = (sample[j] - stats.mean[j]) / stats.std_dev[j];
+        }
+    }
+
+    std::cout << "[LinearSVM] Normalized " << features.size() << " samples" << std::endl;
+}
+
+NormalizationStats normalize_features_inplace(
+    std::vector<std::vector<double>>& features)
+{
+    NormalizationStats stats = compute_normalization_stats(features);
+    normalize_features(features, stats);
+    return stats;
+}
 
 bool load_features_bin(
     const std::string& path,

@@ -102,6 +102,15 @@ public:
 };
 
 // =============================================================================
+// Feature normalization statistics
+// =============================================================================
+struct NormalizationStats {
+    std::vector<double> mean;
+    std::vector<double> std_dev;
+    int feature_dim = 0;
+};
+
+// =============================================================================
 // Utility functions for loading binary feature files
 // =============================================================================
 namespace utils {
@@ -116,6 +125,23 @@ namespace utils {
     bool load_labels_bin(
         const std::string& path,
         std::vector<int>& labels
+    );
+
+    // Compute normalization statistics (mean and std dev) from training data
+    NormalizationStats compute_normalization_stats(
+        const std::vector<std::vector<double>>& features
+    );
+
+    // Apply normalization using pre-computed statistics
+    void normalize_features(
+        std::vector<std::vector<double>>& features,
+        const NormalizationStats& stats
+    );
+
+    // Normalize features in-place (Z-score normalization)
+    // Returns the normalization statistics for use on test set
+    NormalizationStats normalize_features_inplace(
+        std::vector<std::vector<double>>& features
     );
 }
 
