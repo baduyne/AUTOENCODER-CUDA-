@@ -309,11 +309,7 @@ int gpu_phase_main(int argc, char** argv)
         printf("Loading test data: %zu images\n", test_labels.size());
     }
 
-
-    bool should_train = !weights_loaded;  // Train if weights weren't loaded
-    if (should_train) {
-        printf("\n[INFO] Starting training phase...\n");
-        train_autoencoder(
+    train_autoencoder(
             gpu_model,
             train_images,
             test_images,
@@ -321,17 +317,7 @@ int gpu_phase_main(int argc, char** argv)
             epochs,
             lr,
             patience
-        );
-
-        // Create weight directory if it doesn't exist
-        std::filesystem::create_directories("./weight");
-
-        // Save trained weights
-        gpu_model.save_weights(weight_path);
-        printf("[INFO] Trained weights saved to: %s\n", weight_path.c_str());
-    } else {
-        printf("\n[INFO] Skipping training (using pre-trained weights)\n");
-    }
+    );
     
     gpu_model.save_weights(weight_path);
     // After training, extract features from the datasets (preserve order)
