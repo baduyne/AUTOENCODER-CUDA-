@@ -47,7 +47,7 @@ int cpu_phase_main(int argc, char** argv) {
     try {
         // Allow override via environment variable or use default
         const char* env_cifar = std::getenv("CIFAR_ROOT");
-        std::string cifar_root = env_cifar ? env_cifar : "../data/cifar-10-batches-bin";
+        std::string cifar_root = env_cifar ? env_cifar : "./data/cifar-10-batches-bin";
 
         std::string ae_save_path = "./weight/model_cpu.bin";
 

@@ -16,7 +16,11 @@ Makefile
 *.a
 *.dll
 *.exe
-
+.pdf
+.bin
+data
+.csv
+build
 # Python cache
 __pycache__/
 *.py[cod]

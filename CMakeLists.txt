@@ -51,6 +51,7 @@ add_library(dl_core
 target_include_directories(dl_core PUBLIC
     ${CMAKE_SOURCE_DIR}/src/cpu/include
     ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src/gpu/include
     ${CMAKE_SOURCE_DIR}/libs/liblinear
 )
 
@@ -66,10 +67,10 @@ if (USE_CUDA)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
     set_property(TARGET dl_core PROPERTY CUDA_ARCHITECTURES 89)
     target_sources(dl_core PRIVATE 
-        src/gpu/gpu_main_wrapper.cu
-        src/gpu/gpu_autoencoder.cu
-        src/gpu/utils.cpp
-        src/gpu/main.cu
+        src/gpu/src/gpu_main_wrapper.cu
+        src/gpu/src/gpu_autoencoder.cu
+        src/gpu/src/utils.cpp
+        src/gpu/src/main.cu
     )
 else()
     # Stub implementation when CUDA is not available
@@ -92,12 +93,12 @@ set_property(TARGET cpu_main PROPERTY CXX_STANDARD 17)
 
 # Standalone GPU phase executable
 if (USE_CUDA)
-    add_executable(gpu_main src/gpu/gpu_main_wrapper.cu)
+    add_executable(gpu_main src/gpu/src/gpu_main_wrapper.cu)
     target_link_libraries(gpu_main PRIVATE dl_core)
     set_property(TARGET gpu_main PROPERTY CXX_STANDARD 17)
     set_property(TARGET gpu_main PROPERTY CUDA_STANDARD 17)
 else()
-    add_executable(gpu_main src/gpu/gpu_main_wrapper.cpp)
+    add_executable(gpu_main src/gpu/src/gpu_main_wrapper.cpp)
     target_link_libraries(gpu_main PRIVATE dl_core)
     set_property(TARGET gpu_main PROPERTY CXX_STANDARD 17)
 endif()
