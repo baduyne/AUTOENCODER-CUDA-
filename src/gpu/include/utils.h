@@ -28,3 +28,5 @@ bool load_cifar10_from_dir(const std::string& dir_path,
 
 // Shuffle images and labels in unison
 void shuffle_dataset(std::vector<std::vector<float>>& images, std::vector<int>& labels);
+
+std::vector<std::string> load_bin_files_from_folder(const std::string& folder_path);

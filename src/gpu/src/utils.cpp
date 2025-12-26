@@ -4,9 +4,25 @@
 #include <filesystem>
 #include <random>
 #include <algorithm>
-
+namespace fs = std::filesystem;
 const int IMAGE_SIZE = 32*32*3;
 
+std::vector<std::string> load_bin_files_from_folder(const std::string& folder_path) {
+    std::vector<std::string> bin_files;
+
+    for (const auto& entry : fs::directory_iterator(folder_path)) {
+        if (entry.is_regular_file()) {
+            std::string path = entry.path().string();
+
+            // Lọc file .bin
+            if (entry.path().extension() == ".bin") {
+                bin_files.push_back(path);
+            }
+        }
+    }
+
+    return bin_files;
+}
 
 void shuffle_dataset(std::vector<std::vector<float>>& images, std::vector<int>& labels)
 {

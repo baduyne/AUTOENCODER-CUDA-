@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <algorithm>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -236,85 +237,73 @@ int gpu_phase_main(int argc, char** argv)
 {
 
     int batch_size = 64;
-    int epochs = 20;
+    int epochs = 1;
     float lr = 0.001f;
     int patience = 2;
 
     GPUAutoencoder gpu_model;
     gpu_model.initialize();
-
-    // Try to load pre-trained weights
-    std::string weight_path = "./weight/model_gpu.bin";
-    std::ifstream weight_check(weight_path);
-    bool weights_loaded = false;
-
-    if (weight_check.good()) {
-        weight_check.close();
-        gpu_model.load_weights(weight_path);
-        weights_loaded = true;
-        printf("[INFO] Loaded pre-trained weights from: %s\n", weight_path.c_str());
-    } else {
-        printf("[WARNING] No pre-trained weights found at: %s\n", weight_path.c_str());
-        printf("[INFO] Using Xavier-initialized weights (model will need training)\n");
-    }
+    std::string weight_path = "./src/gpu/weights/model.bin";
+    gpu_model.load_weights(weight_path);
 
     // load dataset 
     std::vector<std::vector<float>> train_images;
     std::vector<int> train_labels;
-    std::vector<std::string> train_files = {
-        "data/cifar-10-batches-bin/data_batch_1.bin",
-        "data/cifar-10-batches-bin/data_batch_2.bin",
-        "data/cifar-10-batches-bin/data_batch_3.bin",
-        "data/cifar-10-batches-bin/data_batch_4.bin",
-        "data/cifar-10-batches-bin/data_batch_5.bin"
-    };
-    if (!load_cifar10_dataset(train_files, train_images, train_labels, true)) 
-    {  
-       printf("Error loading training data\n");
-       return 0;
-    }
-    else{
+
+    std::string train_folder = "data/cifar-10-batches-bin";
+    std::vector<std::string> train_files = load_bin_files_from_folder(train_folder);
+
+    // Loại bỏ test_batch.bin ra khỏi train nếu bạn muốn tách riêng
+    train_files.erase(
+        std::remove_if(train_files.begin(), train_files.end(),
+                    [](const std::string& s) { 
+                        return s.find("test_batch") != std::string::npos; 
+                    }),
+        train_files.end()
+    );
+
+    if (!load_cifar10_dataset(train_files, train_images, train_labels, true)) {
+        printf("Error loading training data\n");
+        return 0;
+    } else {
         printf("Loading training data: %zu images\n", train_labels.size());
     }
+
 
     // Example to load test data (10,000 images)
     std::vector<std::vector<float>> test_images;
     std::vector<int> test_labels;
-    std::vector<std::string> test_files = {"data/cifar-10-batches-bin/test_batch.bin"};
-    if (!load_cifar10_dataset(test_files, test_images, test_labels, false)) 
-    {  
+    std::string test_folder = "data/cifar-10-batches-bin";
+    std::vector<std::string> test_files = load_bin_files_from_folder(test_folder);
+
+    // chỉ lấy file test_batch.bin
+    test_files.erase(
+        std::remove_if(test_files.begin(), test_files.end(),
+                    [](const std::string& s) {
+                        return s.find("test_batch.bin") == std::string::npos;
+                    }),
+        test_files.end()
+    );
+
+    if (!load_cifar10_dataset(test_files, test_images, test_labels, false)) {
         printf("Error loading test data\n");
         return 0;
-    }
-    else{
+    } else {
         printf("Loading test data: %zu images\n", test_labels.size());
     }
 
-    // Only train if we need to (no weights loaded or forced training)
-    bool should_train = !weights_loaded;  // Train if weights weren't loaded
 
-    if (should_train) {
-        printf("\n[INFO] Starting training phase...\n");
-        train_autoencoder(
-            gpu_model,
-            train_images,
-            test_images,
-            batch_size,
-            epochs,
-            lr,
-            patience
-        );
+    train_autoencoder(
+    gpu_model,
+    train_images,
+    test_images,
+    batch_size,
+    epochs,
+    lr,
+    patience
+    );
 
-        // Create weight directory if it doesn't exist
-        std::filesystem::create_directories("./weight");
-
-        // Save trained weights
-        gpu_model.save_weights(weight_path);
-        printf("[INFO] Trained weights saved to: %s\n", weight_path.c_str());
-    } else {
-        printf("\n[INFO] Skipping training (using pre-trained weights)\n");
-    }
-
+    gpu_model.save_weights(weight_path);
     // After training, extract features from the datasets (preserve order)
     std::vector<float> train_feats;
     std::vector<float> test_feats;
@@ -354,12 +343,8 @@ int gpu_phase_main(int argc, char** argv)
         fout.close();
     }
 
-    printf("\n[SUCCESS] GPU phase completed successfully!\n");
-    printf("[INFO] Features saved:\n");
-    printf("  - train_features.bin (%zu samples)\n", train_images.size());
-    printf("  - test_features.bin (%zu samples)\n", test_images.size());
-    printf("  - train_labels.bin\n");
-    printf("  - test_labels.bin\n");
-
+    // Save weights after finishing
+    // gpu_model.save_weights("./weights/model.bin");
+    // training 
     return 0;
 }
