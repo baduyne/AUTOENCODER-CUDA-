@@ -3,6 +3,8 @@ from sklearn.svm import SVC
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, classification_report
 import joblib
+import pandas as pd
+import os
 
 # Parameters
 FEAT_DIM = 128 * 8 * 8
@@ -71,6 +73,23 @@ print(f"Model saved to {MODEL_OUT}")
 #  Evaluation
 # ============================
 pred = clf.predict(test_feats)
+
+# Output folder
+OUT_DIR = "./extracted_feature"
+os.makedirs(OUT_DIR, exist_ok=True)
+
+# Create DataFrame
+df = pd.DataFrame({
+    "true_label": test_labels,
+    "pred_label": pred
+})
+
+# Save to CSV
+df_out = os.path.join(OUT_DIR, "svm_predictions.csv")
+df.to_csv(df_out, index=False)
+
+print(f"Saved prediction results to {df_out}")
+
 acc = accuracy_score(test_labels, pred)
 print(f"Test accuracy: {acc:.4f}")
 print(classification_report(test_labels, pred))
