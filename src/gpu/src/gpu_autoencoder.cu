@@ -708,25 +708,21 @@ constexpr int B4_SIZE = 256;
 constexpr int W5_SIZE = 3 * 256 * 3 * 3; 
 constexpr int B5_SIZE = 3;
 
-// Xavier weight initialization
-static void init_weights_he_uniform(float* weights, int in_channels, int out_channels) {
+// XaVier weight initialization
+static void init_weights_xavier(float* weights, int in_channels, int out_channels) {
     std::random_device rd;
     std::mt19937 gen(rd());
-
-    int kernel_size = 3 * 3;
-    int fan_in = in_channels * kernel_size;
-
-    float limit = std::sqrt(6.0f / fan_in);
+    // Lấy kích thước kernel 3x3
+    float limit = std::sqrt(6.0f / ((in_channels * 3 * 3) + (out_channels * 3 * 3)));
     std::uniform_real_distribution<float> dis(-limit, limit);
 
-    int total_weights = out_channels * fan_in;
+    int kernel_size = 3 * 3;
+    int total_weights = out_channels * in_channels * kernel_size;
 
     for (int i = 0; i < total_weights; i++) {
         weights[i] = dis(gen);
     }
 }
-
-
 
 
 GPUAutoencoder::GPUAutoencoder() {
@@ -795,6 +791,7 @@ void GPUAutoencoder::allocate_device_memory(int requested_batch_size) {
     // Keep a sensible upper limit per allocation to avoid huge kernel launches.
     // We'll allocate buffers sized to requested_batch_size, but if already allocated
     // and large enough, we reuse them. If smaller, we reallocate.
+    
     if (memory_allocated && requested_batch_size <= max_batch_size) {
         return;
     }
@@ -850,10 +847,7 @@ void GPUAutoencoder::allocate_device_memory(int requested_batch_size) {
     CUDA_CHECK(cudaMalloc(&dev_grad_enc_act2, max_batch_size * 128 * 16 * 16 * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&dev_grad_enc_pool1, max_batch_size * 256 * 16 * 16 * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&dev_grad_enc_act1, max_batch_size * 256 * 32 * 32 * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&dev_grad_input, max_batch_size * 3 * 32 * 32 * sizeof(float)));
-
-    memory_allocated = true;
-    
+    CUDA_CHECK(cudaMalloc(&dev_grad_input, max_batch_size * 3 * 32 * 32 * sizeof(float))); 
     // act4: batch x 256 x 16 x 16
     CUDA_CHECK(cudaMalloc(&dev_dec_act1, max_batch_size * 256 * 16 * 16 * sizeof(float)));
     
@@ -937,11 +931,11 @@ void GPUAutoencoder::initialize() {
     allocate_host_memory();
 
     // Initialize weights using Xavier initialization
-    init_weights_he_uniform(host_enc_conv1_w, 3, 256);
-    init_weights_he_uniform(host_enc_conv2_w, 256, 128);
-    init_weights_he_uniform(host_dec_conv1_w, 128, 128);
-    init_weights_he_uniform(host_dec_conv2_w, 128, 256);
-    init_weights_he_uniform(host_dec_conv3_w, 256, 3);
+    init_weights_xavier(host_enc_conv1_w, 3, 256);
+    init_weights_xavier(host_enc_conv2_w, 256, 128);
+    init_weights_xavier(host_dec_conv1_w, 128, 128);
+    init_weights_xavier(host_dec_conv2_w, 128, 256);
+    init_weights_xavier(host_dec_conv3_w, 256, 3);
 
     // Initialize biases to zero
     memset(host_enc_conv1_b, 0, B1_SIZE * sizeof(float));
@@ -951,7 +945,7 @@ void GPUAutoencoder::initialize() {
     memset(host_dec_conv3_b, 0, B5_SIZE * sizeof(float));
 
     // Allocate device memory and copy weights
-    allocate_device_memory(max_batch_size);
+    allocate_device_memory(64);
     copy_weights_to_device();
 }
 
@@ -1138,6 +1132,7 @@ void GPUAutoencoder::extract_features(const float* h_input, float* h_features, i
     while (remaining > 0) {
         int chunk = std::min(remaining, MAX_CHUNK);
 
+        printf("memory_allocated: %d, max_batch_size: %d", memory_allocated, max_batch_size);
         // Ensure device buffers are allocated for the chunk size
         allocate_device_memory(chunk);
 
@@ -1239,5 +1234,4 @@ void GPUAutoencoder::load_weights(const std::string& filepath) {
 
     printf("GPU Model weights loaded from: %s\n", filepath.c_str());
 }
-
 

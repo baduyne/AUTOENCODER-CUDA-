@@ -24,7 +24,7 @@ build
 # Python cache
 __pycache__/
 *.py[cod]
-
+*.joblib
 # Logs and temporary files
 *.log
 *.tmp

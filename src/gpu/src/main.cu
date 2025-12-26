@@ -237,7 +237,7 @@ int gpu_phase_main(int argc, char** argv)
 {
 
     int batch_size = 64;
-    int epochs = 1;
+    int epochs = 10;
     float lr = 0.001f;
     int patience = 2;
 
@@ -245,7 +245,7 @@ int gpu_phase_main(int argc, char** argv)
     gpu_model.initialize();
 
     // Try to load pre-trained weights
-    std::string weight_path = "./weight/model_gpu.bin";
+    std::string weight_path = "./src/gpu/weight/model_gpu.bin";
     std::ifstream weight_check(weight_path);
     bool weights_loaded = false;
 

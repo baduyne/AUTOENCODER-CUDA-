@@ -35,4 +35,6 @@ mkdir build
 cd build
 cmake .. -DUSE_CUDA=ON
 cmake --build . -j8
+cd ..
+./build/gpu_main
 '''
