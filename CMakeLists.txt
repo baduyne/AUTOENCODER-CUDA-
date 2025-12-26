@@ -1,11 +1,24 @@
 cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
-project(dl_pipeline LANGUAGES CXX)
+project(dl_pipeline LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_C_STANDARD 99)
 
 # Enable/disable GPU phase
 option(USE_CUDA "Build with CUDA support" OFF)
+
+# =============================================================================
+# BLAS library (required by liblinear)
+# =============================================================================
+add_library(blas STATIC
+    libs/liblinear/blas/daxpy.c
+    libs/liblinear/blas/ddot.c
+    libs/liblinear/blas/dnrm2.c
+    libs/liblinear/blas/dscal.c
+)
+target_include_directories(blas PUBLIC ${CMAKE_SOURCE_DIR}/libs/liblinear/blas)
+set_property(TARGET blas PROPERTY LINKER_LANGUAGE C)
 
 # =============================================================================
 # LIBLINEAR library (replaces libsvm - much faster for linear SVM)
@@ -13,10 +26,6 @@ option(USE_CUDA "Build with CUDA support" OFF)
 add_library(liblinear STATIC
     libs/liblinear/linear.cpp
     libs/liblinear/newton.cpp
-    libs/liblinear/blas/daxpy.c
-    libs/liblinear/blas/ddot.c
-    libs/liblinear/blas/dnrm2.c
-    libs/liblinear/blas/dscal.c
 )
 
 target_include_directories(liblinear PUBLIC
@@ -24,6 +33,7 @@ target_include_directories(liblinear PUBLIC
     ${CMAKE_SOURCE_DIR}/libs/liblinear/blas
 )
 
+target_link_libraries(liblinear PUBLIC blas)
 set_property(TARGET liblinear PROPERTY CXX_STANDARD 17)
 
 # =============================================================================

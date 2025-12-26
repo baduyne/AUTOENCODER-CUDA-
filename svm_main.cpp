@@ -28,8 +28,8 @@ struct AppConfig {
     std::string model_path          = "linear_svm_model.bin";
 
     // SVM parameters
-    double C = 1.0;
-    double eps = 0.1;
+    double C = 0.1;
+    double eps = 0.01;
     int solver_type = L2R_L2LOSS_SVC_DUAL;  // Default: L2-loss SVC dual
     int num_classes = 10;
 
@@ -155,6 +155,7 @@ bool run_svm_pipeline(
               << ", solver=" << config.solver_type << "\n" << std::endl;
 
     struct model* svm_model = nullptr;
+    svm::NormalizationStats norm_stats;  // Store normalization stats for test set
 
     try {
         // =================================================================
@@ -178,6 +179,10 @@ bool run_svm_pipeline(
                 std::cerr << prefix << "Error: Feature/label size mismatch" << std::endl;
                 return false;
             }
+
+            // IMPORTANT: Normalize features (Z-score normalization)
+            std::cout << prefix << "Normalizing training features..." << std::endl;
+            norm_stats = svm::utils::normalize_features_inplace(train_features);
 
             // Configure SVM
             svm::Config svm_config;
@@ -227,6 +232,10 @@ bool run_svm_pipeline(
             if (!svm::utils::load_labels_bin(config.test_labels_path, test_labels)) {
                 return false;
             }
+
+            // IMPORTANT: Normalize test features using training set statistics
+            std::cout << prefix << "Normalizing test features using training statistics..." << std::endl;
+            svm::utils::normalize_features(test_features, norm_stats);
 
             // Evaluate
             auto eval_start = Clock::now();

@@ -242,7 +242,21 @@ int gpu_phase_main(int argc, char** argv)
 
     GPUAutoencoder gpu_model;
     gpu_model.initialize();
-    gpu_model.load_weights("./weights/model.bin");
+
+    // Try to load pre-trained weights
+    std::string weight_path = "./weight/model_gpu.bin";
+    std::ifstream weight_check(weight_path);
+    bool weights_loaded = false;
+
+    if (weight_check.good()) {
+        weight_check.close();
+        gpu_model.load_weights(weight_path);
+        weights_loaded = true;
+        printf("[INFO] Loaded pre-trained weights from: %s\n", weight_path.c_str());
+    } else {
+        printf("[WARNING] No pre-trained weights found at: %s\n", weight_path.c_str());
+        printf("[INFO] Using Xavier-initialized weights (model will need training)\n");
+    }
 
     // load dataset 
     std::vector<std::vector<float>> train_images;
@@ -276,15 +290,30 @@ int gpu_phase_main(int argc, char** argv)
         printf("Loading test data: %zu images\n", test_labels.size());
     }
 
-    train_autoencoder(
-    gpu_model,
-    train_images,
-    test_images,
-    batch_size,
-    epochs,
-    lr,
-    patience
-    );
+    // Only train if we need to (no weights loaded or forced training)
+    bool should_train = !weights_loaded;  // Train if weights weren't loaded
+
+    if (should_train) {
+        printf("\n[INFO] Starting training phase...\n");
+        train_autoencoder(
+            gpu_model,
+            train_images,
+            test_images,
+            batch_size,
+            epochs,
+            lr,
+            patience
+        );
+
+        // Create weight directory if it doesn't exist
+        std::filesystem::create_directories("./weight");
+
+        // Save trained weights
+        gpu_model.save_weights(weight_path);
+        printf("[INFO] Trained weights saved to: %s\n", weight_path.c_str());
+    } else {
+        printf("\n[INFO] Skipping training (using pre-trained weights)\n");
+    }
 
     // After training, extract features from the datasets (preserve order)
     std::vector<float> train_feats;
@@ -325,8 +354,12 @@ int gpu_phase_main(int argc, char** argv)
         fout.close();
     }
 
-    // Save weights after finishing
-    // gpu_model.save_weights("./weights/model.bin");
-    // training 
+    printf("\n[SUCCESS] GPU phase completed successfully!\n");
+    printf("[INFO] Features saved:\n");
+    printf("  - train_features.bin (%zu samples)\n", train_images.size());
+    printf("  - test_features.bin (%zu samples)\n", test_images.size());
+    printf("  - train_labels.bin\n");
+    printf("  - test_labels.bin\n");
+
     return 0;
 }

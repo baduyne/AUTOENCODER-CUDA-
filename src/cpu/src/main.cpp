@@ -1,8 +1,6 @@
 #include <iostream>
 #include <cstdlib>
 #include "dl/training_pipeline_cpu.h"
-#include "dl/svm_trainer.h"
-#include "dl/svm_evaluator.h"
 
 int cpu_phase_main(int argc, char** argv) {
     try {

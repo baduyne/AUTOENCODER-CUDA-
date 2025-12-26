@@ -949,7 +949,7 @@ void GPUAutoencoder::initialize() {
     memset(host_dec_conv3_b, 0, B5_SIZE * sizeof(float));
 
     // Allocate device memory and copy weights
-    allocate_device_memory(max_batch_size);
+    allocate_device_memory(64);
     copy_weights_to_device();
 }
 
