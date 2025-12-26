@@ -10,6 +10,7 @@
 #define IMG_H 32
 #define IMG_W 32
 
+
 class GPUAutoencoder {
 public:
     GPUAutoencoder();

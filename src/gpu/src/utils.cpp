@@ -4,9 +4,50 @@
 #include <filesystem>
 #include <random>
 #include <algorithm>
-
+namespace fs = std::filesystem;
 const int IMAGE_SIZE = 32*32*3;
 
+
+void parse_args(int argc, char** argv, Config& cfg) {
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+
+        auto get_value = [&](const std::string& key) -> std::string {
+            if (arg.rfind(key, 0) == 0) {
+                return arg.substr(key.length());
+            }
+            return "";
+        };
+
+        std::string v;
+
+        if (!(v = get_value("--weight=")).empty()) cfg.weight_path = v;
+        else if (!(v = get_value("--batch=")).empty()) cfg.batch_size = std::stoi(v);
+        else if (!(v = get_value("--epoch=")).empty()) cfg.epochs = std::stoi(v);
+        else if (!(v = get_value("--patience=")).empty()) cfg.patience = std::stoi(v);
+        else if (!(v = get_value("--lr=")).empty()) cfg.lr = std::stof(v);
+        else if (!(v = get_value("--train=")).empty()) cfg.train_folder = v;
+        else if (!(v = get_value("--test=")).empty()) cfg.test_folder = v;
+        else if (!(v = get_value("--output=")).empty()) cfg.output_folder = v;
+    }
+}
+
+std::vector<std::string> load_bin_files_from_folder(const std::string& folder_path) {
+    std::vector<std::string> bin_files;
+
+    for (const auto& entry : fs::directory_iterator(folder_path)) {
+        if (entry.is_regular_file()) {
+            std::string path = entry.path().string();
+
+            // Lọc file .bin
+            if (entry.path().extension() == ".bin") {
+                bin_files.push_back(path);
+            }
+        }
+    }
+
+    return bin_files;
+}
 
 void shuffle_dataset(std::vector<std::vector<float>>& images, std::vector<int>& labels)
 {

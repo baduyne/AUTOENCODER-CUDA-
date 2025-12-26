@@ -708,7 +708,7 @@ constexpr int B4_SIZE = 256;
 constexpr int W5_SIZE = 3 * 256 * 3 * 3; 
 constexpr int B5_SIZE = 3;
 
-// Xavier weight initialization
+// XaVier weight initialization
 static void init_weights_xavier(float* weights, int in_channels, int out_channels) {
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -723,7 +723,6 @@ static void init_weights_xavier(float* weights, int in_channels, int out_channel
         weights[i] = dis(gen);
     }
 }
-
 
 
 GPUAutoencoder::GPUAutoencoder() {
@@ -792,13 +791,13 @@ void GPUAutoencoder::allocate_device_memory(int requested_batch_size) {
     // Keep a sensible upper limit per allocation to avoid huge kernel launches.
     // We'll allocate buffers sized to requested_batch_size, but if already allocated
     // and large enough, we reuse them. If smaller, we reallocate.
+    
     if (memory_allocated && requested_batch_size <= max_batch_size) {
         return;
     }
 
     if (memory_allocated) {
         free_device_memory();
-        copy_weights_to_device();
     }
 
     max_batch_size = requested_batch_size;
@@ -848,10 +847,7 @@ void GPUAutoencoder::allocate_device_memory(int requested_batch_size) {
     CUDA_CHECK(cudaMalloc(&dev_grad_enc_act2, max_batch_size * 128 * 16 * 16 * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&dev_grad_enc_pool1, max_batch_size * 256 * 16 * 16 * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&dev_grad_enc_act1, max_batch_size * 256 * 32 * 32 * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&dev_grad_input, max_batch_size * 3 * 32 * 32 * sizeof(float)));
-
-    memory_allocated = true;
-    
+    CUDA_CHECK(cudaMalloc(&dev_grad_input, max_batch_size * 3 * 32 * 32 * sizeof(float))); 
     // act4: batch x 256 x 16 x 16
     CUDA_CHECK(cudaMalloc(&dev_dec_act1, max_batch_size * 256 * 16 * 16 * sizeof(float)));
     
@@ -1135,7 +1131,6 @@ void GPUAutoencoder::extract_features(const float* h_input, float* h_features, i
 
     while (remaining > 0) {
         int chunk = std::min(remaining, MAX_CHUNK);
-
         // Ensure device buffers are allocated for the chunk size
         allocate_device_memory(chunk);
 
@@ -1237,5 +1232,4 @@ void GPUAutoencoder::load_weights(const std::string& filepath) {
 
     printf("GPU Model weights loaded from: %s\n", filepath.c_str());
 }
-
 

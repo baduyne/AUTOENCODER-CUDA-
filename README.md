@@ -26,3 +26,15 @@ sudo apt-get -y install cudnn9-cuda-12
 
 ## Run file
 nvcc ./main.cu  ./gpu_autoencoder.cu ./utils.cpp  -o main
+
+
+build file:
+'''bash
+rm -r build
+mkdir build
+cd build
+cmake .. -DUSE_CUDA=ON
+cmake --build . -j8
+cd ..
+./build/gpu_main --epoch=1
+'''
