@@ -1,4 +1,6 @@
 #include "gpu_autoencoder.h"
+#include "gpu_autoencoder_loop_opt.h"
+#include "gpu_autoencoder_matrix_multiplication.h"
 #include "utils.h"
 #include <filesystem>
 #include <fstream>
@@ -19,9 +21,8 @@
         } \
     } while (0)
 
-
 void train_autoencoder(
-    GPUAutoencoder& gpu_model,
+    GPUAutoencoder* gpu_model,
     const std::vector<std::vector<float>>& train_images,
     const std::vector<std::vector<float>>& test_images,
     int batch_size,
@@ -41,18 +42,18 @@ void train_autoencoder(
     std::ofstream train_log("train_log.csv", std::ios::out);
     std::ofstream eval_log("eval_log.csv", std::ios::out);
 
-    
     if (!train_log.is_open()) std::cerr << "Failed to open train_log.csv\n";
     if (!eval_log.is_open()) std::cerr << "Failed to open eval_log.csv\n";
 
-    train_log << "epoch,step,train_loss,step_time_ms\n";
+    // ADD MEMORY COLUMN HERE
+    train_log << "epoch,step,train_loss,step_time_ms,gpu_used_mb\n";
     eval_log  << "epoch,eval_loss,epoch_time_ms\n";
     train_log.flush();
     eval_log.flush();
+
     // Early stopping
     int partition_counter = 0;
     float best_eval_loss = 1e9f;
-    
 
     // CUDA event (reuse for epoch)
     cudaEvent_t epoch_start_ev, epoch_end_ev;
@@ -64,10 +65,8 @@ void train_autoencoder(
         int train_step = 0;
         printf("\n=== Epoch %d ===\n", e + 1);
 
-        // start epoch timer
         CUDA_CHECK(cudaEventRecord(epoch_start_ev, 0));
 
-        // TRAIN LOOP
         float train_loss = 0.0f;
         size_t train_batches = 0;
 
@@ -88,10 +87,10 @@ void train_autoencoder(
             CUDA_CHECK(cudaEventRecord(step_start_ev, 0));
 
             // forward + backward
-            gpu_model.forward(h_input.data(), h_output.data(), batch_size);
-            float loss = gpu_model.compute_loss(h_input.data(), batch_size);
-            gpu_model.backward(h_input.data(), h_input.data(), batch_size);
-            gpu_model.update_weights(lr);
+            gpu_model->forward(h_input.data(), h_output.data(), batch_size);
+            float loss = gpu_model->compute_loss(h_input.data(), batch_size);
+            gpu_model->backward(h_input.data(), h_input.data(), batch_size);
+            gpu_model->update_weights(lr);
 
             CUDA_CHECK(cudaEventRecord(step_end_ev, 0));
             CUDA_CHECK(cudaEventSynchronize(step_end_ev));
@@ -99,12 +98,20 @@ void train_autoencoder(
             float step_ms = 0.0f;
             CUDA_CHECK(cudaEventElapsedTime(&step_ms, step_start_ev, step_end_ev));
 
+            // ======================================
+            // MEMORY USAGE HERE
+            // ======================================
+            size_t free_b = 0, total_b = 0;
+            cudaMemGetInfo(&free_b, &total_b);
+            float used_mb = (total_b - free_b) / (1024.0f * 1024.0f);
+
             // write train log
             if (train_log.is_open() && train_step % log_step_interval == 0) {
                 train_log << (e + 1) << ","
                           << train_batches << ","
                           << std::fixed << std::setprecision(6) << loss << ","
-                          << std::fixed << std::setprecision(3) << step_ms
+                          << std::fixed << std::setprecision(3) << step_ms << ","
+                          << std::fixed << std::setprecision(2) << used_mb
                           << "\n";
                 train_log.flush();
             }
@@ -132,8 +139,8 @@ void train_autoencoder(
                        IMG_ELEM * sizeof(float));
             }
 
-            gpu_model.forward(h_input.data(), h_output.data(), batch_size);
-            float loss = gpu_model.compute_loss(h_input.data(), batch_size);
+            gpu_model->forward(h_input.data(), h_output.data(), batch_size);
+            float loss = gpu_model->compute_loss(h_input.data(), batch_size);
 
             eval_loss += loss;
             eval_batches++;
@@ -149,7 +156,6 @@ void train_autoencoder(
         float epoch_ms = 0.0f;
         CUDA_CHECK(cudaEventElapsedTime(&epoch_ms, epoch_start_ev, epoch_end_ev));
 
-        // WRITE EVAL LOG ONLY HERE
         if (eval_log.is_open()) {
             eval_log << (e + 1) << ","
                      << std::fixed << std::setprecision(6) << eval_loss << ","
@@ -157,7 +163,6 @@ void train_autoencoder(
                      << "\n";
             eval_log.flush();
         }
-
 
         // EARLY STOPPING
         if (eval_loss < best_eval_loss) {
@@ -185,7 +190,7 @@ void train_autoencoder(
 
 // Extract features from in-memory vectors (keeps old behavior)
 void extract_features_dataset(
-    GPUAutoencoder& gpu_model,
+    GPUAutoencoder* gpu_model,
     const std::vector<std::vector<float>>& train_images,
     const std::vector<std::vector<float>>& test_images,
     int batch_size,
@@ -204,10 +209,10 @@ void extract_features_dataset(
     printf("\n========== EXTRACT TRAIN FEATURES ==========" "\n");
     train_features_out.resize(train_images.size() * FEAT_SIZE);
     size_t idx = 0;
-    for (size_t i = 0; i + batch_size <= train_images.size(); i += batch_size) 
+    for (size_t i = 0; i + batch_size <= train_images.size(); i += batch_size)
     {
         for (int b = 0; b < batch_size; ++b) memcpy(&h_input[b * IMG_SIZE], train_images[i + b].data(), one_img_bytes);
-        gpu_model.extract_features(h_input, h_features, batch_size);
+        gpu_model->extract_features(h_input, h_features, batch_size);
 
 
         for (int b = 0; b < batch_size; ++b) memcpy(&train_features_out[(idx + b) * FEAT_SIZE], &h_features[b * FEAT_SIZE], one_feat_bytes);
@@ -218,10 +223,10 @@ void extract_features_dataset(
     printf("\n========== EXTRACT TEST FEATURES ==========" "\n");
     test_features_out.resize(test_images.size() * FEAT_SIZE);
     idx = 0;
-    for (size_t i = 0; i + batch_size <= test_images.size(); i += batch_size) 
+    for (size_t i = 0; i + batch_size <= test_images.size(); i += batch_size)
     {
         for (int b = 0; b < batch_size; ++b) memcpy(&h_input[b * IMG_SIZE], test_images[i + b].data(), one_img_bytes);
-        gpu_model.extract_features(h_input, h_features, batch_size);
+        gpu_model->extract_features(h_input, h_features, batch_size);
 
         for (int b = 0; b < batch_size; ++b) memcpy(&test_features_out[(idx + b) * FEAT_SIZE], &h_features[b * FEAT_SIZE], one_feat_bytes);
         idx += batch_size; printf("Extracted %zu / %zu test images\r", idx, test_images.size());
@@ -249,8 +254,20 @@ int gpu_phase_main(int argc, char** argv)
     std::string out_folder   = cfg.output_folder;
 
     printf("batch_size: %d, epochs: %d\n",batch_size, epochs);
-    GPUAutoencoder gpu_model;
-    gpu_model.initialize();
+
+    // Create model based on optimization type
+    GPUAutoencoder* gpu_model = nullptr;
+    if (cfg.optimization_type == "loop-unroll") {
+        printf("[INFO] Using Loop-Unrolled Optimized GPU Autoencoder\n");
+        gpu_model = new GPUAutoencoderLoopOpt();
+    } else if (cfg.optimization_type == "mm") {
+        printf("[INFO] Using Matrix Multiplication Optimized GPU Autoencoder\n");
+        gpu_model = new GPUAutoencoderMatrixMultiplicationOpt();
+    } else {
+        printf("[INFO] Using Baseline GPU Autoencoder\n");
+        gpu_model = new GPUAutoencoder();
+    }
+    gpu_model->initialize();
 
     // Try to load pre-trained weights
     std::ifstream weight_check(weight_path);
@@ -258,7 +275,7 @@ int gpu_phase_main(int argc, char** argv)
 
     if (weight_check.good()) {
         weight_check.close();
-        gpu_model.load_weights(weight_path);
+        gpu_model->load_weights(weight_path);
         weights_loaded = true;
         printf("[INFO] Loaded pre-trained weights from: %s\n", weight_path.c_str());
     } else {
@@ -325,6 +342,9 @@ int gpu_phase_main(int argc, char** argv)
     std::vector<float> test_feats;
     extract_features_dataset(gpu_model, train_images, test_images, batch_size, train_feats, test_feats);
 
+    // Create output directory if it doesn't exist
+    std::filesystem::create_directories(out_folder);
+
     // Save features and labels to binary files (row-major float32, labels int32)
     // Train features
     {
@@ -368,9 +388,8 @@ int gpu_phase_main(int argc, char** argv)
     printf("  - train_labels.bin\n");
     printf("  - test_labels.bin\n");
 
+    // Cleanup
+    delete gpu_model;
 
-    // Save weights after finishing
-    // gpu_model.save_weights("./weights/model.bin");
-    // training 
     return 0;
 }

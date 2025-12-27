@@ -14,7 +14,7 @@
 class GPUAutoencoder {
 public:
     GPUAutoencoder();
-    ~GPUAutoencoder();
+    virtual ~GPUAutoencoder();
 
     // ======================
     // Public API
@@ -30,7 +30,7 @@ public:
     void save_weights(const std::string& filepath);
     void load_weights(const std::string& filepath);
 
-private:
+protected:
 
     // ======================
     // Host Weights
@@ -91,10 +91,10 @@ private:
     void copy_weights_to_device();
     void copy_weights_to_host();
 
-    void forward_device(const float* d_in, int batch_size);
-    void backward_device(const float* d_in, const float* d_tgt, int batch_size);
+    virtual void forward_device(const float* d_in, int batch_size);
+    virtual void backward_device(const float* d_in, const float* d_tgt, int batch_size);
 
-    void extract_features_device(const float* d_in, float* d_features, int batch_size);
+    virtual void extract_features_device(const float* d_in, float* d_features, int batch_size);
 };
 
 

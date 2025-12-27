@@ -18,6 +18,9 @@ struct Config {
     std::string test_folder  = "data/cifar-10-batches-bin";
 
     std::string output_folder = "./extracted_feature";
+
+    // Optimization type: "baseline" or "loop-unroll"
+    std::string optimization_type = "baseline";
 };
 
 void parse_args(int argc, char** argv, Config& cfg);

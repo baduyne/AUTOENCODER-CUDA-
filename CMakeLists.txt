@@ -69,6 +69,8 @@ if (USE_CUDA)
     target_sources(dl_core PRIVATE 
         src/gpu/src/gpu_main_wrapper.cu
         src/gpu/src/gpu_autoencoder.cu
+        src/gpu/src/gpu_autoencoder_loop_opt.cu
+        src/gpu/src/gpu_autoencoder_matrix_multiplication.cu
         src/gpu/src/utils.cpp
         src/gpu/src/main.cu
     )
