@@ -29,7 +29,7 @@ __global__ void conv2d_backward_input_tiled(
     int width
 );
 
-__global__ void conv2d_backward_weights_kernel_opt(
+__global__ void conv2d_backward_weights_kernel_mm(
     const float* __restrict__ input,
     const float* __restrict__ dL_doutput,
     float* __restrict__ dL_dweights,
@@ -40,7 +40,7 @@ __global__ void conv2d_backward_weights_kernel_opt(
     int width
 );
 
-__global__ void conv2d_backward_bias_kernel_opt(
+__global__ void conv2d_backward_bias_kernel_mm(
     const float* __restrict__ dL_doutput,
     float* __restrict__ dL_dbias,
     int batch_size,
@@ -50,7 +50,7 @@ __global__ void conv2d_backward_bias_kernel_opt(
 );
 
 // Optimized MaxPool Kernels (2x2 fully unrolled)
-__global__ void maxpool2d_forward_kernel_opt(
+__global__ void maxpool2d_forward_kernel_mm(
     const float* __restrict__ input,
     float* __restrict__ output,
     int batch_size,
@@ -59,7 +59,7 @@ __global__ void maxpool2d_forward_kernel_opt(
     int in_width
 );
 
-__global__ void maxpool2d_backward_kernel_opt(
+__global__ void maxpool2d_backward_kernel_mm(
     const float* input,
     const float* output,
     const float* dL_doutput,
@@ -71,7 +71,7 @@ __global__ void maxpool2d_backward_kernel_opt(
 );
 
 // Optimized Upsample Kernels (2x2 fully unrolled)
-__global__ void upsample2d_backward_kernel_opt(
+__global__ void upsample2d_backward_kernel_mm(
     const float* dL_doutput,
     float* dL_dinput,
     int batch_size,
@@ -93,17 +93,17 @@ void gpu_conv2d_backward_matrix_multiplication(
     int batch_size, int in_channels, int out_channels, int height, int width
 );
 
-void gpu_maxpool2d_forward_opt(
+void gpu_maxpool2d_forward_mm(
     const float* dev_input_data, float* d_output, int batch_size, int channels,
     int in_height, int in_width
 );
 
-void gpu_maxpool2d_backward_opt(
+void gpu_maxpool2d_backward_mm(
     const float* dev_input_data, const float* d_output, const float* d_dL_doutput,
     float* dev_grad_input, int batch_size, int channels, int in_height, int in_width
 );
 
-void gpu_upsample2d_backward_opt(
+void gpu_upsample2d_backward_mm(
     const float* d_dL_doutput, float* dev_grad_input, int batch_size, int channels,
     int in_height, int in_width
 );

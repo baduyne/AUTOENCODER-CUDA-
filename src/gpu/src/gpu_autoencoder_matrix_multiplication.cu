@@ -1,4 +1,4 @@
-#include "gpu_autoencoder_loop_opt.h"
+#include "gpu_autoencoder_matrix_multiplication.h"
 #include <algorithm>
 
 // Macro kiểm tra lỗi CUDA
@@ -183,7 +183,7 @@ __global__ void conv2d_backward_input_tiled(
 }
 
 
-__global__ void conv2d_backward_weights_kernel_opt(
+__global__ void conv2d_backward_weights_kernel_mm(
     const float* __restrict__ input,
     const float* __restrict__ dL_doutput,
     float* __restrict__ dL_dweights,
@@ -228,7 +228,7 @@ __global__ void conv2d_backward_weights_kernel_opt(
     dL_dweights[w_idx] = acc;
 }
 
-__global__ void conv2d_backward_bias_kernel_opt(
+__global__ void conv2d_backward_bias_kernel_mm(
     const float* __restrict__ dL_doutput,
     float* __restrict__ dL_dbias,
     int batch_size,
@@ -276,7 +276,7 @@ void gpu_conv2d_backward_matrix_multiplication(
     if (d_dL_dweights) {
         int total_weights = out_channels * in_channels * 3 * 3;
         int grid_size_weights = (total_weights + block_size - 1) / block_size;
-        conv2d_backward_weights_kernel_opt<<<grid_size_weights, block_size>>>(
+        conv2d_backward_weights_kernel_mm<<<grid_size_weights, block_size>>>(
             dev_input_data, d_dL_doutput, d_dL_dweights, batch_size, in_channels,
             out_channels, height, width
         );
@@ -286,7 +286,7 @@ void gpu_conv2d_backward_matrix_multiplication(
     // dL/dbias
     if (d_dL_dbias) {
         int grid_size_bias = (out_channels + block_size - 1) / block_size;
-        conv2d_backward_bias_kernel_opt<<<grid_size_bias, block_size>>>(
+        conv2d_backward_bias_kernel_mm<<<grid_size_bias, block_size>>>(
             d_dL_doutput, d_dL_dbias, batch_size, out_channels, height, width
         );
         CUDA_CHECK(cudaGetLastError());
@@ -297,7 +297,7 @@ void gpu_conv2d_backward_matrix_multiplication(
 // OPTIMIZED MAXPOOL KERNELS (2x2 FULLY UNROLLED)
 // ============================================================================
 
-__global__ void maxpool2d_forward_kernel_opt(
+__global__ void maxpool2d_forward_kernel_mm(
     const float* __restrict__ input,
     float* __restrict__ output,
     int batch_size,
@@ -352,7 +352,7 @@ __global__ void maxpool2d_forward_kernel_opt(
     output[out_idx] = best;
 }
 
-void gpu_maxpool2d_forward_opt(
+void gpu_maxpool2d_forward_mm(
     const float* dev_input_data, float* d_output, int batch_size, int channels,
     int in_height, int in_width
 ) {
@@ -362,13 +362,13 @@ void gpu_maxpool2d_forward_opt(
     int block_size = 256;
     int grid_size = (total_outputs + block_size - 1) / block_size;
 
-    maxpool2d_forward_kernel_opt<<<grid_size, block_size>>>(
+    maxpool2d_forward_kernel_mm<<<grid_size, block_size>>>(
         dev_input_data, d_output, batch_size, channels, in_height, in_width
     );
     CUDA_CHECK(cudaGetLastError());
 }
 
-__global__ void maxpool2d_backward_kernel_opt(
+__global__ void maxpool2d_backward_kernel_mm(
     const float* input,
     const float* output,
     const float* dL_doutput,
@@ -438,7 +438,7 @@ __global__ void maxpool2d_backward_kernel_opt(
     }
 }
 
-void gpu_maxpool2d_backward_opt(
+void gpu_maxpool2d_backward_mm(
     const float* dev_input_data, const float* d_output, const float* d_dL_doutput,
     float* dev_grad_input, int batch_size, int channels, int in_height, int in_width
 ) {
@@ -451,7 +451,7 @@ void gpu_maxpool2d_backward_opt(
     int input_size = batch_size * channels * in_height * in_width;
     CUDA_CHECK(cudaMemset(dev_grad_input, 0, input_size * sizeof(float)));
 
-    maxpool2d_backward_kernel_opt<<<grid_size, block_size>>>(
+    maxpool2d_backward_kernel_mm<<<grid_size, block_size>>>(
         dev_input_data, d_output, d_dL_doutput, dev_grad_input, batch_size, channels,
         in_height, in_width
     );
@@ -462,7 +462,7 @@ void gpu_maxpool2d_backward_opt(
 // OPTIMIZED UPSAMPLE KERNELS (2x2 FULLY UNROLLED)
 // ============================================================================
 
-__global__ void upsample2d_backward_kernel_opt(
+__global__ void upsample2d_backward_kernel_mm(
     const float* dL_doutput,
     float* dL_dinput,
     int batch_size,
@@ -522,7 +522,7 @@ __global__ void upsample2d_backward_kernel_opt(
     dL_dinput[idx] = sum;
 }
 
-void gpu_upsample2d_backward_opt(
+void gpu_upsample2d_backward_mm(
     const float* d_dL_doutput, float* dev_grad_input, int batch_size, int channels,
     int in_height, int in_width
 ) {
@@ -530,7 +530,7 @@ void gpu_upsample2d_backward_opt(
     int block_size = 256;
     int grid_size = (total_inputs + block_size - 1) / block_size;
 
-    upsample2d_backward_kernel_opt<<<grid_size, block_size>>>(
+    upsample2d_backward_kernel_mm<<<grid_size, block_size>>>(
         d_dL_doutput, dev_grad_input, batch_size, channels, in_height, in_width
     );
     CUDA_CHECK(cudaGetLastError());
@@ -558,7 +558,7 @@ void GPUAutoencoderMatrixMultiplicationOpt::forward_device(const float* d_in, in
     gpu_relu_forward(dev_enc_act1, batch_size * 256 * 32 * 32);
 
     // MaxPool1: 32x32->16x16
-    gpu_maxpool2d_forward_opt(dev_enc_act1, dev_enc_pool1, batch_size, 256, 32, 32);
+    gpu_maxpool2d_forward_mm(dev_enc_act1, dev_enc_pool1, batch_size, 256, 32, 32);
 
     // Conv2: 256->128, 16x16 + ReLU
     gpu_conv2d_forward_matrix_multiplication(dev_enc_pool1, dev_enc_conv2_w, dev_enc_conv2_b, dev_enc_act2,
@@ -566,7 +566,7 @@ void GPUAutoencoderMatrixMultiplicationOpt::forward_device(const float* d_in, in
     gpu_relu_forward(dev_enc_act2, batch_size * 128 * 16 * 16);
 
     // MaxPool2 (encoded layer): 16x16->8x8
-    gpu_maxpool2d_forward_opt(dev_enc_act2, dev_latent, batch_size, 128, 16, 16);
+    gpu_maxpool2d_forward_mm(dev_enc_act2, dev_latent, batch_size, 128, 16, 16);
 
     // Decoder
     // Conv3: 128->128, 8x8 + ReLU
@@ -602,7 +602,7 @@ void GPUAutoencoderMatrixMultiplicationOpt::backward_device(const float* d_in, c
                             batch_size, 256, 3, 32, 32);
 
     // 3. Backward through Upsample2: 16x16->32x32
-    gpu_upsample2d_backward_opt(dev_grad_dec_outdev_grad_dec_upsample2, dev_grad_dec_act1,
+    gpu_upsample2d_backward_mm(dev_grad_dec_outdev_grad_dec_upsample2, dev_grad_dec_act1,
                                 batch_size, 256, 16, 16);
 
     // 4. Backward through ReLU4
@@ -625,7 +625,7 @@ void GPUAutoencoderMatrixMultiplicationOpt::backward_device(const float* d_in, c
                             batch_size, 128, 128, 8, 8);
 
     // 9. Backward through MaxPool2: 16x16->8x8
-    gpu_maxpool2d_backward_opt(dev_enc_act2, dev_latent, dev_grad_latent, dev_grad_enc_act2,
+    gpu_maxpool2d_backward_mm(dev_enc_act2, dev_latent, dev_grad_latent, dev_grad_enc_act2,
                                batch_size, 128, 16, 16);
 
     // 10. Backward through ReLU2
@@ -637,7 +637,7 @@ void GPUAutoencoderMatrixMultiplicationOpt::backward_device(const float* d_in, c
                             batch_size, 256, 128, 16, 16);
 
     // 12. Backward through MaxPool1: 32x32->16x16
-    gpu_maxpool2d_backward_opt(dev_enc_act1, dev_enc_pool1, dev_grad_enc_pool1, dev_grad_enc_act1,
+    gpu_maxpool2d_backward_mm(dev_enc_act1, dev_enc_pool1, dev_grad_enc_pool1, dev_grad_enc_act1,
                                batch_size, 256, 32, 32);
 
     // 13. Backward through ReLU1
@@ -658,7 +658,7 @@ void GPUAutoencoderMatrixMultiplicationOpt::extract_features_device(const float*
     gpu_relu_forward(dev_enc_act1, batch_size * 256 * 32 * 32);
 
     // MaxPool1: 32x32->16x16
-    gpu_maxpool2d_forward_opt(dev_enc_act1, dev_enc_pool1, batch_size, 256, 32, 32);
+    gpu_maxpool2d_forward_mm(dev_enc_act1, dev_enc_pool1, batch_size, 256, 32, 32);
 
     // Conv2: 256->128, 16x16 + ReLU
     gpu_conv2d_forward_matrix_multiplication(dev_enc_pool1, dev_enc_conv2_w, dev_enc_conv2_b, dev_enc_act2,
@@ -666,5 +666,5 @@ void GPUAutoencoderMatrixMultiplicationOpt::extract_features_device(const float*
     gpu_relu_forward(dev_enc_act2, batch_size * 128 * 16 * 16);
 
     // MaxPool2 (encoded layer): 16x16->8x8
-    gpu_maxpool2d_forward_opt(dev_enc_act2, d_features, batch_size, 128, 16, 16);
+    gpu_maxpool2d_forward_mm(dev_enc_act2, d_features, batch_size, 128, 16, 16);
 }

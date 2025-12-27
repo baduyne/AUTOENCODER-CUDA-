@@ -336,7 +336,7 @@ int gpu_phase_main(int argc, char** argv)
             patience
     );
     
-    gpu_model.save_weights(weight_path);
+    gpu_model->save_weights(weight_path);
     // After training, extract features from the datasets (preserve order)
     std::vector<float> train_feats;
     std::vector<float> test_feats;
