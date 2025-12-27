@@ -20,7 +20,6 @@
         } \
     } while (0)
 
-
 void train_autoencoder(
     GPUAutoencoder* gpu_model,
     const std::vector<std::vector<float>>& train_images,
@@ -42,18 +41,18 @@ void train_autoencoder(
     std::ofstream train_log("train_log.csv", std::ios::out);
     std::ofstream eval_log("eval_log.csv", std::ios::out);
 
-    
     if (!train_log.is_open()) std::cerr << "Failed to open train_log.csv\n";
     if (!eval_log.is_open()) std::cerr << "Failed to open eval_log.csv\n";
 
-    train_log << "epoch,step,train_loss,step_time_ms\n";
+    // ADD MEMORY COLUMN HERE
+    train_log << "epoch,step,train_loss,step_time_ms,gpu_used_mb\n";
     eval_log  << "epoch,eval_loss,epoch_time_ms\n";
     train_log.flush();
     eval_log.flush();
+
     // Early stopping
     int partition_counter = 0;
     float best_eval_loss = 1e9f;
-    
 
     // CUDA event (reuse for epoch)
     cudaEvent_t epoch_start_ev, epoch_end_ev;
@@ -65,10 +64,8 @@ void train_autoencoder(
         int train_step = 0;
         printf("\n=== Epoch %d ===\n", e + 1);
 
-        // start epoch timer
         CUDA_CHECK(cudaEventRecord(epoch_start_ev, 0));
 
-        // TRAIN LOOP
         float train_loss = 0.0f;
         size_t train_batches = 0;
 
@@ -100,12 +97,20 @@ void train_autoencoder(
             float step_ms = 0.0f;
             CUDA_CHECK(cudaEventElapsedTime(&step_ms, step_start_ev, step_end_ev));
 
+            // ======================================
+            // MEMORY USAGE HERE
+            // ======================================
+            size_t free_b = 0, total_b = 0;
+            cudaMemGetInfo(&free_b, &total_b);
+            float used_mb = (total_b - free_b) / (1024.0f * 1024.0f);
+
             // write train log
             if (train_log.is_open() && train_step % log_step_interval == 0) {
                 train_log << (e + 1) << ","
                           << train_batches << ","
                           << std::fixed << std::setprecision(6) << loss << ","
-                          << std::fixed << std::setprecision(3) << step_ms
+                          << std::fixed << std::setprecision(3) << step_ms << ","
+                          << std::fixed << std::setprecision(2) << used_mb
                           << "\n";
                 train_log.flush();
             }
@@ -150,7 +155,6 @@ void train_autoencoder(
         float epoch_ms = 0.0f;
         CUDA_CHECK(cudaEventElapsedTime(&epoch_ms, epoch_start_ev, epoch_end_ev));
 
-        // WRITE EVAL LOG ONLY HERE
         if (eval_log.is_open()) {
             eval_log << (e + 1) << ","
                      << std::fixed << std::setprecision(6) << eval_loss << ","
@@ -158,7 +162,6 @@ void train_autoencoder(
                      << "\n";
             eval_log.flush();
         }
-
 
         // EARLY STOPPING
         if (eval_loss < best_eval_loss) {
