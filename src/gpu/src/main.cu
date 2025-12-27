@@ -326,11 +326,7 @@ int gpu_phase_main(int argc, char** argv)
         printf("Loading test data: %zu images\n", test_labels.size());
     }
 
-
-    bool should_train = !weights_loaded;  // Train if weights weren't loaded
-    if (should_train) {
-        printf("\n[INFO] Starting training phase...\n");
-        train_autoencoder(
+    train_autoencoder(
             gpu_model,
             train_images,
             test_images,
@@ -338,20 +334,9 @@ int gpu_phase_main(int argc, char** argv)
             epochs,
             lr,
             patience
-        );
-
-        // Create weight directory if it doesn't exist
-        std::filesystem::path weight_file_path(weight_path);
-        std::filesystem::create_directories(weight_file_path.parent_path());
-
-        // Save trained weights
-        gpu_model->save_weights(weight_path);
-        printf("[INFO] Trained weights saved to: %s\n", weight_path.c_str());
-    } else {
-        printf("\n[INFO] Skipping training (using pre-trained weights)\n");
-    }
-
-    gpu_model->save_weights(weight_path);
+    );
+    
+    gpu_model.save_weights(weight_path);
     // After training, extract features from the datasets (preserve order)
     std::vector<float> train_feats;
     std::vector<float> test_feats;
@@ -363,15 +348,15 @@ int gpu_phase_main(int argc, char** argv)
     // Save features and labels to binary files (row-major float32, labels int32)
     // Train features
     {
-        std::string train_features = out_folder + "/train_features.bin";
-        std::ofstream fout(train_features, std::ios::binary);
+        std::string train_features_file = out_folder + "/train_features.bin";
+        std::ofstream fout(train_features_file, std::ios::binary);
         fout.write(reinterpret_cast<const char*>(train_feats.data()), train_feats.size() * sizeof(float));
         fout.close();
     }
     // Train labels
     {
-        std::string train_labels = out_folder + "/train_labels.bin";
-        std::ofstream fout(train_labels, std::ios::binary);
+        std::string train_labels_file = out_folder + "/train_labels.bin";
+        std::ofstream fout(train_labels_file, std::ios::binary);
         // write as int32
         for (int v : train_labels) {
             int32_t x = static_cast<int32_t>(v);
@@ -381,15 +366,15 @@ int gpu_phase_main(int argc, char** argv)
     }
     // Test features
     {
-        std::string test_features = out_folder + "/test_features.bin";
-        std::ofstream fout(test_features, std::ios::binary);
+        std::string test_features_file = out_folder + "/test_features.bin";
+        std::ofstream fout(test_features_file, std::ios::binary);
         fout.write(reinterpret_cast<const char*>(test_feats.data()), test_feats.size() * sizeof(float));
         fout.close();
     }
     // Test labels
     {
-        std::string test_labels = out_folder + "/test_labels.bin";
-        std::ofstream fout(test_labels, std::ios::binary);
+        std::string test_labels_file = out_folder + "/test_labels.bin";
+        std::ofstream fout(test_labels_file, std::ios::binary);
         for (int v : test_labels) {
             int32_t x = static_cast<int32_t>(v);
             fout.write(reinterpret_cast<const char*>(&x), sizeof(int32_t));
