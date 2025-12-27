@@ -708,21 +708,25 @@ constexpr int B4_SIZE = 256;
 constexpr int W5_SIZE = 3 * 256 * 3 * 3; 
 constexpr int B5_SIZE = 3;
 
-// XaVier weight initialization
-static void init_weights_xavier(float* weights, int in_channels, int out_channels) {
+// He (Kaiming) weight initialization - He Normal
+static void init_weights_he(float* weights, int in_channels, int out_channels) {
     std::random_device rd;
     std::mt19937 gen(rd());
-    // Lấy kích thước kernel 3x3
-    float limit = std::sqrt(6.0f / ((in_channels * 3 * 3) + (out_channels * 3 * 3)));
-    std::uniform_real_distribution<float> dis(-limit, limit);
 
     int kernel_size = 3 * 3;
+    int fan_in = in_channels * kernel_size;
+
+    // He Normal std = sqrt(2 / fan_in)
+    float std = std::sqrt(2.0f / fan_in);
+    std::normal_distribution<float> dis(0.0f, std);
+
     int total_weights = out_channels * in_channels * kernel_size;
 
     for (int i = 0; i < total_weights; i++) {
         weights[i] = dis(gen);
     }
 }
+
 
 
 GPUAutoencoder::GPUAutoencoder() {
@@ -745,7 +749,7 @@ GPUAutoencoder::GPUAutoencoder() {
     dev_dec_conv1_out = dev_dec_upsample1 = dev_dec_act1 = dev_dec_upsample2 = dev_dec_out = nullptr; // Decoder activations
 
     // Device gradient buffers
-    dev_grad_dec_out = dev_grad_dec_outdev_grad_dec_upsample2 = dev_grad_dec_act1 = dev_grad_dec_upsample1 = nullptr; 
+    dev_grad_dec_out = dev_grad_dec_upsample2 = dev_grad_dec_act1 = dev_grad_dec_upsample1 = nullptr; 
     dev_grad_dec_conv1 = dev_grad_latent = dev_grad_enc_act2 = dev_grad_enc_pool1 = nullptr;
     dev_grad_enc_act1 = dev_grad_input = nullptr;
 
@@ -839,7 +843,7 @@ void GPUAutoencoder::allocate_device_memory(int requested_batch_size) {
     CUDA_CHECK(cudaMalloc(&dev_dec_upsample2, max_batch_size * 256 * 32 * 32 * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&dev_dec_out, max_batch_size * 3 * 32 * 32 * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&dev_grad_dec_out, max_batch_size * 3 * 32 * 32 * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&dev_grad_dec_outdev_grad_dec_upsample2, max_batch_size * 256 * 32 * 32 * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dev_grad_dec_upsample2, max_batch_size * 256 * 32 * 32 * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&dev_grad_dec_act1, max_batch_size * 256 * 16 * 16 * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&dev_grad_dec_upsample1, max_batch_size * 128 * 16 * 16 * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&dev_grad_dec_conv1, max_batch_size * 128 * 8 * 8 * sizeof(float)));
@@ -859,7 +863,7 @@ void GPUAutoencoder::allocate_device_memory(int requested_batch_size) {
 
     // Allocate gradient buffers for backward pass
     CUDA_CHECK(cudaMalloc(&dev_grad_dec_out, max_batch_size * 3 * 32 * 32 * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&dev_grad_dec_outdev_grad_dec_upsample2, max_batch_size * 256 * 32 * 32 * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dev_grad_dec_upsample2, max_batch_size * 256 * 32 * 32 * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&dev_grad_dec_act1, max_batch_size * 256 * 16 * 16 * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&dev_grad_dec_upsample1, max_batch_size * 128 * 16 * 16 * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&dev_grad_dec_conv1, max_batch_size * 128 * 8 * 8 * sizeof(float)));
@@ -914,7 +918,7 @@ void GPUAutoencoder::free_device_memory() {
 
     // Free gradient buffers
     if (dev_grad_dec_out) cudaFree(dev_grad_dec_out); dev_grad_dec_out = nullptr;
-    if (dev_grad_dec_outdev_grad_dec_upsample2) cudaFree(dev_grad_dec_outdev_grad_dec_upsample2); dev_grad_dec_outdev_grad_dec_upsample2 = nullptr;
+    if (dev_grad_dec_upsample2) cudaFree(dev_grad_dec_upsample2); dev_grad_dec_upsample2 = nullptr;
     if (dev_grad_dec_act1) cudaFree(dev_grad_dec_act1); dev_grad_dec_act1 = nullptr;
     if (dev_grad_dec_upsample1) cudaFree(dev_grad_dec_upsample1); dev_grad_dec_upsample1 = nullptr;
     if (dev_grad_dec_conv1) cudaFree(dev_grad_dec_conv1); dev_grad_dec_conv1 = nullptr;
@@ -931,11 +935,11 @@ void GPUAutoencoder::initialize() {
     allocate_host_memory();
 
     // Initialize weights using Xavier initialization
-    init_weights_xavier(host_enc_conv1_w, 3, 256);
-    init_weights_xavier(host_enc_conv2_w, 256, 128);
-    init_weights_xavier(host_dec_conv1_w, 128, 128);
-    init_weights_xavier(host_dec_conv2_w, 128, 256);
-    init_weights_xavier(host_dec_conv3_w, 256, 3);
+    init_weights_he(host_enc_conv1_w, 3, 256);
+    init_weights_he(host_enc_conv2_w, 256, 128);
+    init_weights_he(host_dec_conv1_w, 128, 128);
+    init_weights_he(host_dec_conv2_w, 128, 256);
+    init_weights_he(host_dec_conv3_w, 256, 3);
 
     // Initialize biases to zero
     memset(host_enc_conv1_b, 0, B1_SIZE * sizeof(float));
@@ -1007,13 +1011,13 @@ void GPUAutoencoder::backward_device(const float* d_in, const float* d_tgt, int 
     gpu_mse_loss_gradient(dev_dec_out, d_tgt, dev_grad_dec_out, output_size);
 
     // 2. Backward through Conv5: 256->3, 32x32
-    // dev_grad_input cho Conv5 là dev_grad_dec_outdev_grad_dec_upsample2
-    gpu_conv2d_backward(dev_dec_upsample2, dev_dec_conv3_w, dev_grad_dec_out, dev_grad_dec_outdev_grad_dec_upsample2, dev_grad_dec_conv3_w, dev_grad_dec_conv3_b,
+    // dev_grad_input cho Conv5 là dev_grad_dec_upsample2
+    gpu_conv2d_backward(dev_dec_upsample2, dev_dec_conv3_w, dev_grad_dec_out, dev_grad_dec_upsample2, dev_grad_dec_conv3_w, dev_grad_dec_conv3_b,
                         batch_size, 256, 3, 32, 32);
 
     // 3. Backward through Upsample2: 16x16->32x32
     // dev_grad_input cho Upsample2 là dev_grad_dec_act1
-    gpu_upsample2d_backward(dev_grad_dec_outdev_grad_dec_upsample2, dev_grad_dec_act1, batch_size, 256, 16, 16);
+    gpu_upsample2d_backward(dev_grad_dec_upsample2, dev_grad_dec_act1, batch_size, 256, 16, 16);
 
     // 4. Backward through ReLU4
     gpu_relu_backward(dev_dec_act1, dev_grad_dec_act1, dev_grad_dec_act1, batch_size * 256 * 16 * 16);

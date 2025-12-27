@@ -13,11 +13,15 @@ struct Config {
     int epochs = 20;
     float lr = 0.001f;
     int patience = 2;
-
     std::string train_folder = "data/cifar-10-batches-bin";
     std::string test_folder  = "data/cifar-10-batches-bin";
 
     std::string output_folder = "./extracted_feature";
+
+    // Optimization type: "baseline" or "loop-unroll"
+    std::string optimization_type = "baseline";
+    std::string log = "log";
+    std::string mode = "train";
 };
 
 void parse_args(int argc, char** argv, Config& cfg);

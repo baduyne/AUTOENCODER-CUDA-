@@ -14,7 +14,7 @@
 class GPUAutoencoder {
 public:
     GPUAutoencoder();
-    ~GPUAutoencoder();
+    virtual ~GPUAutoencoder();
 
     // ======================
     // Public API
@@ -30,7 +30,7 @@ public:
     void save_weights(const std::string& filepath);
     void load_weights(const std::string& filepath);
 
-private:
+protected:
 
     // ======================
     // Host Weights
@@ -69,7 +69,7 @@ private:
     // ======================
     // Device Backprop Buffers
     // ======================
-    float *dev_grad_dec_out, *dev_grad_dec_outdev_grad_dec_upsample2, *dev_grad_dec_act1, *dev_grad_dec_upsample1;
+    float *dev_grad_dec_out, *dev_grad_dec_upsample2, *dev_grad_dec_act1, *dev_grad_dec_upsample1;
     float *dev_grad_dec_conv1, *dev_grad_latent, *dev_grad_enc_act2, *dev_grad_enc_pool1;
     float *dev_grad_enc_act1, *dev_grad_input;
 
@@ -91,16 +91,16 @@ private:
     void copy_weights_to_device();
     void copy_weights_to_host();
 
-    void forward_device(const float* d_in, int batch_size);
-    void backward_device(const float* d_in, const float* d_tgt, int batch_size);
+    virtual void forward_device(const float* d_in, int batch_size);
+    virtual void backward_device(const float* d_in, const float* d_tgt, int batch_size);
 
-    void extract_features_device(const float* d_in, float* d_features, int batch_size);
+    virtual void extract_features_device(const float* d_in, float* d_features, int batch_size);
 };
 
 
 // HELPER FUNCTION
 
-static void init_weights_xavier(float* weights, int in_channels, int out_channels);
+static void init_weights_he(float* weights, int in_channels, int out_channels);
 
 __global__ void conv2d_forward_kernel(
     const float* __restrict__ input,

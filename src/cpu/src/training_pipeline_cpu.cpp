@@ -151,7 +151,7 @@ void TrainingPipelineCPU::train_autoencoder(int num_epochs, int batch_size, floa
 void TrainingPipelineCPU::extract_features(bool train, int batch_size,
                                           std::vector<std::vector<double>>& out_features,
                                           std::vector<int>& out_labels) {
-    CIFAR10Dataset dataset(cifar_root_, train);
+    CIFAR10Dataset dataset(cifar_root_, train, 500);
     out_features.clear(); out_labels.clear();
     dataset.reset(false); // deterministic order by default
 
@@ -174,6 +174,65 @@ void TrainingPipelineCPU::extract_features(bool train, int batch_size,
         }
         // batch destructor frees memory
     }
+}
+
+void TrainingPipelineCPU::extract_and_save_features(bool train,
+                                                     int batch_size,
+                                                     int max_samples,
+                                                     const std::string& features_path,
+                                                     const std::string& labels_path) {
+    std::cout << "\n========== EXTRACT " << (train ? "TRAIN" : "TEST") << " FEATURES (CPU) ==========" << std::endl;
+
+    CIFAR10Dataset dataset(cifar_root_, train, max_samples);
+    dataset.reset(false); // deterministic order
+
+    const size_t LATENT_DIM = AutoencoderCPU::latent_size(); // 8192
+    std::vector<float> all_features;
+    std::vector<int32_t> all_labels;
+
+    std::vector<float> latent_buf;
+    size_t total_extracted = 0;
+
+    while (true) {
+        CIFAR10Batch batch;
+        if (!dataset.next_batch(batch_size, batch)) break;
+
+        // Extract latent features
+        latent_buf.resize(batch.batch_size * LATENT_DIM);
+        autoencoder_->extract_latent(batch.images, batch.batch_size, latent_buf.data());
+
+        // Append to vectors
+        all_features.insert(all_features.end(), latent_buf.begin(), latent_buf.end());
+        for (size_t i = 0; i < batch.batch_size; ++i) {
+            all_labels.push_back(static_cast<int32_t>(batch.labels[i]));
+        }
+
+        total_extracted += batch.batch_size;
+        std::cout << "\rExtracted " << total_extracted << " / " << max_samples << " images" << std::flush;
+    }
+    std::cout << std::endl;
+
+    // Save features (float32, row-major)
+    std::ofstream feat_file(features_path, std::ios::binary);
+    if (!feat_file) {
+        throw std::runtime_error("Cannot open features file: " + features_path);
+    }
+    feat_file.write(reinterpret_cast<const char*>(all_features.data()),
+                    all_features.size() * sizeof(float));
+    feat_file.close();
+    std::cout << "[CPU] Saved features to: " << features_path << std::endl;
+
+    // Save labels (int32)
+    std::ofstream label_file(labels_path, std::ios::binary);
+    if (!label_file) {
+        throw std::runtime_error("Cannot open labels file: " + labels_path);
+    }
+    label_file.write(reinterpret_cast<const char*>(all_labels.data()),
+                     all_labels.size() * sizeof(int32_t));
+    label_file.close();
+    std::cout << "[CPU] Saved labels to: " << labels_path << std::endl;
+
+    std::cout << "[CPU] Total samples: " << total_extracted << std::endl;
 }
 
 } // namespace dl
