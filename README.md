@@ -36,5 +36,6 @@ cd build
 cmake .. -DUSE_CUDA=ON
 cmake --build . -j8
 cd ..
-./build/gpu_main --epoch=1
+./build/gpu_main
+python ./src/svm/train_svm.py 
 '''

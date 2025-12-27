@@ -8,7 +8,7 @@ import os
 
 # Parameters
 FEAT_DIM = 128 * 8 * 8
-SELECTED_LABELS = [0, 1, 2, 3, 4, 5]  
+SELECTED_LABELS = [0, 1, 2, 3, 4]  
 TRAIN_FEAT_FILE = './extracted_feature/train_features.bin'
 TRAIN_LABEL_FILE = './extracted_feature/train_labels.bin'
 TEST_FEAT_FILE = './extracted_feature/test_features.bin'

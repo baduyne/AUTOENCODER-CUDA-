@@ -100,7 +100,7 @@ private:
 
 // HELPER FUNCTION
 
-static void init_weights_xavier(float* weights, int in_channels, int out_channels);
+static void init_weights_he(float* weights, int in_channels, int out_channels);
 
 __global__ void conv2d_forward_kernel(
     const float* __restrict__ input,

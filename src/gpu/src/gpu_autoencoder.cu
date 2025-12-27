@@ -708,21 +708,25 @@ constexpr int B4_SIZE = 256;
 constexpr int W5_SIZE = 3 * 256 * 3 * 3; 
 constexpr int B5_SIZE = 3;
 
-// XaVier weight initialization
-static void init_weights_xavier(float* weights, int in_channels, int out_channels) {
+// He (Kaiming) weight initialization - He Normal
+static void init_weights_he(float* weights, int in_channels, int out_channels) {
     std::random_device rd;
     std::mt19937 gen(rd());
-    // Lấy kích thước kernel 3x3
-    float limit = std::sqrt(6.0f / ((in_channels * 3 * 3) + (out_channels * 3 * 3)));
-    std::uniform_real_distribution<float> dis(-limit, limit);
 
     int kernel_size = 3 * 3;
+    int fan_in = in_channels * kernel_size;
+
+    // He Normal std = sqrt(2 / fan_in)
+    float std = std::sqrt(2.0f / fan_in);
+    std::normal_distribution<float> dis(0.0f, std);
+
     int total_weights = out_channels * in_channels * kernel_size;
 
     for (int i = 0; i < total_weights; i++) {
         weights[i] = dis(gen);
     }
 }
+
 
 
 GPUAutoencoder::GPUAutoencoder() {
@@ -931,11 +935,11 @@ void GPUAutoencoder::initialize() {
     allocate_host_memory();
 
     // Initialize weights using Xavier initialization
-    init_weights_xavier(host_enc_conv1_w, 3, 256);
-    init_weights_xavier(host_enc_conv2_w, 256, 128);
-    init_weights_xavier(host_dec_conv1_w, 128, 128);
-    init_weights_xavier(host_dec_conv2_w, 128, 256);
-    init_weights_xavier(host_dec_conv3_w, 256, 3);
+    init_weights_he(host_enc_conv1_w, 3, 256);
+    init_weights_he(host_enc_conv2_w, 256, 128);
+    init_weights_he(host_dec_conv1_w, 128, 128);
+    init_weights_he(host_dec_conv2_w, 128, 256);
+    init_weights_he(host_dec_conv3_w, 256, 3);
 
     // Initialize biases to zero
     memset(host_enc_conv1_b, 0, B1_SIZE * sizeof(float));
