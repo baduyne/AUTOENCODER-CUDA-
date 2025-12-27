@@ -350,6 +350,9 @@ int gpu_phase_main(int argc, char** argv)
     std::vector<float> test_feats;
     extract_features_dataset(gpu_model, train_images, test_images, batch_size, train_feats, test_feats);
 
+    // Create output directory if it doesn't exist
+    std::filesystem::create_directories(out_folder);
+
     // Save features and labels to binary files (row-major float32, labels int32)
     // Train features
     {
