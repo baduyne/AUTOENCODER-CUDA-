@@ -6,7 +6,7 @@
 // ============================================================================
 
 // Optimized Convolution Kernels (3x3 fully unrolled)
-__global__ void conv2d_forward_kernel_opt(
+__global__ void conv2d_forward_kernel_tiled(
     const float* __restrict__ input,
     const float* __restrict__ weights,
     const float* __restrict__ bias,
@@ -18,7 +18,7 @@ __global__ void conv2d_forward_kernel_opt(
     int width
 );
 
-__global__ void conv2d_backward_input_kernel_opt(
+__global__ void conv2d_backward_input_tiled(
     const float* __restrict__ weights,
     const float* __restrict__ dL_doutput,
     float* __restrict__ dL_dinput,
@@ -81,13 +81,13 @@ __global__ void upsample2d_backward_kernel_opt(
 );
 
 // Wrapper functions for optimized kernels
-void gpu_conv2d_forward_opt(
+void gpu_conv2d_forward_matrix_multiplication(
     const float* dev_input_data, const float* d_weights, const float* d_bias,
     float* d_output, int batch_size, int in_channels, int out_channels,
     int height, int width
 );
 
-void gpu_conv2d_backward_opt(
+void gpu_conv2d_backward_matrix_multiplication(
     const float* dev_input_data, const float* d_weights, const float* d_dL_doutput,
     float* dev_grad_input, float* d_dL_dweights, float* d_dL_dbias,
     int batch_size, int in_channels, int out_channels, int height, int width
@@ -112,10 +112,10 @@ void gpu_upsample2d_backward_opt(
 // GPUAutoencoderLoopOpt Class
 // ============================================================================
 
-class GPUAutoencoderLoopOpt : public GPUAutoencoder {
+class GPUAutoencoderMatrixMultiplicationOpt: public GPUAutoencoder {
 public:
-    GPUAutoencoderLoopOpt();
-    virtual ~GPUAutoencoderLoopOpt();
+    GPUAutoencoderMatrixMultiplicationOpt();
+    virtual ~GPUAutoencoderMatrixMultiplicationOpt();
 
 protected:
     // Override device-level functions to use optimized kernels

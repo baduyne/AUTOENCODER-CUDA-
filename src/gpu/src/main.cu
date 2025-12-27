@@ -1,5 +1,6 @@
 #include "gpu_autoencoder.h"
 #include "gpu_autoencoder_loop_opt.h"
+#include "gpu_autoencoder_matrix_multiplication.h"
 #include "utils.h"
 #include <filesystem>
 #include <fstream>
@@ -259,6 +260,9 @@ int gpu_phase_main(int argc, char** argv)
     if (cfg.optimization_type == "loop-unroll") {
         printf("[INFO] Using Loop-Unrolled Optimized GPU Autoencoder\n");
         gpu_model = new GPUAutoencoderLoopOpt();
+    } else if (cfg.optimization_type == "mm") {
+        printf("[INFO] Using Matrix Multiplication Optimized GPU Autoencoder\n");
+        gpu_model = new GPUAutoencoderMatrixMultiplicationOpt();
     } else {
         printf("[INFO] Using Baseline GPU Autoencoder\n");
         gpu_model = new GPUAutoencoder();
