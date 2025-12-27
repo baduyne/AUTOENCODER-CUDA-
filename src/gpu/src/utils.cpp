@@ -30,6 +30,8 @@ void parse_args(int argc, char** argv, Config& cfg) {
         else if (!(v = get_value("--test=")).empty()) cfg.test_folder = v;
         else if (!(v = get_value("--output=")).empty()) cfg.output_folder = v;
         else if (!(v = get_value("--opt-type=")).empty()) cfg.optimization_type = v;
+        else if (!(v = get_value("--log=")).empty()) cfg.log = v;
+        else if (!(v = get_value("--model=")).empty()) cfg.mode = v;
     }
 }
 

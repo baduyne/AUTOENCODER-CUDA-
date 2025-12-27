@@ -28,6 +28,7 @@ void train_autoencoder(
     int batch_size,
     int epochs,
     float lr,
+    std::string log,
     int patience,
     int log_step_interval = 50)
 {
@@ -39,8 +40,11 @@ void train_autoencoder(
     // =============================
     // OPEN TWO LOG FILES
     // =============================
-    std::ofstream train_log("train_log.csv", std::ios::out);
-    std::ofstream eval_log("eval_log.csv", std::ios::out);
+    std::string train_log_file = log + "/train_log.csv";
+    std::string eval_log_file = log + "/eval_log.csv";
+
+    std::ofstream train_log(train_log_file, std::ios::out);
+    std::ofstream eval_log(eval_log_file, std::ios::out);
 
     if (!train_log.is_open()) std::cerr << "Failed to open train_log.csv\n";
     if (!eval_log.is_open()) std::cerr << "Failed to open eval_log.csv\n";
@@ -252,8 +256,23 @@ int gpu_phase_main(int argc, char** argv)
     std::string train_folder = cfg.train_folder;
     std::string test_folder  = cfg.test_folder;
     std::string out_folder   = cfg.output_folder;
+    std::string log =  cfg.log;
+    std::string mode = cfg.mode;
+    // Print config info
+    printf("\n=========== CONFIG ===========\n");
+    printf("Mode               : %s\n", cfg.mode.c_str());
+    printf("Batch size         : %d\n", cfg.batch_size);
+    printf("Epochs             : %d\n", cfg.epochs);
+    printf("Learning rate      : %.6f\n", cfg.lr);
+    printf("Patience           : %d\n", cfg.patience);
+    printf("Optimization type  : %s\n", cfg.optimization_type.c_str());
+    printf("Weight path        : %s\n", cfg.weight_path.c_str());
+    printf("Train folder       : %s\n", cfg.train_folder.c_str());
+    printf("Test folder        : %s\n", cfg.test_folder.c_str());
+    printf("Output folder      : %s\n", cfg.output_folder.c_str());
+    printf("Log file           : %s\n", cfg.log.c_str());
+    printf("================================\n\n");
 
-    printf("batch_size: %d, epochs: %d\n",batch_size, epochs);
 
     // Create model based on optimization type
     GPUAutoencoder* gpu_model = nullptr;
@@ -326,68 +345,94 @@ int gpu_phase_main(int argc, char** argv)
         printf("Loading test data: %zu images\n", test_labels.size());
     }
 
-    train_autoencoder(
-            gpu_model,
-            train_images,
-            test_images,
-            batch_size,
-            epochs,
-            lr,
-            patience
-    );
+    printf("\n=============================\n");
+    printf("[INFO] Running in mode: %s\n", mode.c_str());
+    printf("=============================\n\n");
+
+    if (mode == "train") {
+        printf("[INFO] Mode = TRAIN → Starting training...\n");
+        train_autoencoder(
+                gpu_model,
+                train_images,
+                test_images,
+                batch_size,
+                epochs,
+                lr,
+                log,
+                patience
+            );
+        gpu_model->save_weights(weight_path);
+        printf("[INFO] Training completed. Weights saved to: %s\n", weight_path.c_str());
+    }
+    else
+    {
+        printf("[INFO] Mode = %s → Extracting features...\n", mode.c_str());
+        if(!weights_loaded)
+        {
+            printf("[WARNING] No pretrained weights found, training model first...\n");
+            train_autoencoder(
+                gpu_model,
+                train_images,
+                test_images,
+                batch_size,
+                epochs,
+                lr,
+                log,
+                patience
+            );
+        }
+        // After training, extract features from the datasets (preserve order)
+        std::vector<float> train_feats;
+        std::vector<float> test_feats;
+        extract_features_dataset(gpu_model, train_images, test_images, batch_size, train_feats, test_feats);
+
+        // Create output directory if it doesn't exist
+        std::filesystem::create_directories(out_folder);
+
+        // Save features and labels to binary files (row-major float32, labels int32)
+        // Train features
+        {
+            std::string train_features_file = out_folder + "/train_features.bin";
+            std::ofstream fout(train_features_file, std::ios::binary);
+            fout.write(reinterpret_cast<const char*>(train_feats.data()), train_feats.size() * sizeof(float));
+            fout.close();
+        }
+        // Train labels
+        {
+            std::string train_labels_file = out_folder + "/train_labels.bin";
+            std::ofstream fout(train_labels_file, std::ios::binary);
+            // write as int32
+            for (int v : train_labels) {
+                int32_t x = static_cast<int32_t>(v);
+                fout.write(reinterpret_cast<const char*>(&x), sizeof(int32_t));
+            }
+            fout.close();
+        }
+        // Test features
+        {
+            std::string test_features_file = out_folder + "/test_features.bin";
+            std::ofstream fout(test_features_file, std::ios::binary);
+            fout.write(reinterpret_cast<const char*>(test_feats.data()), test_feats.size() * sizeof(float));
+            fout.close();
+        }
+        // Test labels
+        {
+            std::string test_labels_file = out_folder + "/test_labels.bin";
+            std::ofstream fout(test_labels_file, std::ios::binary);
+            for (int v : test_labels) {
+                int32_t x = static_cast<int32_t>(v);
+                fout.write(reinterpret_cast<const char*>(&x), sizeof(int32_t));
+            }
+            fout.close();
+        }
+        printf("\n[SUCCESS] GPU phase completed successfully!\n");
+        printf("[INFO] Features saved:\n");
+        printf("  - train_features.bin (%zu samples)\n", train_images.size());
+        printf("  - test_features.bin (%zu samples)\n", test_images.size());
+        printf("  - train_labels.bin\n");
+        printf("  - test_labels.bin\n");
+    }
     
-    gpu_model->save_weights(weight_path);
-    // After training, extract features from the datasets (preserve order)
-    std::vector<float> train_feats;
-    std::vector<float> test_feats;
-    extract_features_dataset(gpu_model, train_images, test_images, batch_size, train_feats, test_feats);
-
-    // Create output directory if it doesn't exist
-    std::filesystem::create_directories(out_folder);
-
-    // Save features and labels to binary files (row-major float32, labels int32)
-    // Train features
-    {
-        std::string train_features_file = out_folder + "/train_features.bin";
-        std::ofstream fout(train_features_file, std::ios::binary);
-        fout.write(reinterpret_cast<const char*>(train_feats.data()), train_feats.size() * sizeof(float));
-        fout.close();
-    }
-    // Train labels
-    {
-        std::string train_labels_file = out_folder + "/train_labels.bin";
-        std::ofstream fout(train_labels_file, std::ios::binary);
-        // write as int32
-        for (int v : train_labels) {
-            int32_t x = static_cast<int32_t>(v);
-            fout.write(reinterpret_cast<const char*>(&x), sizeof(int32_t));
-        }
-        fout.close();
-    }
-    // Test features
-    {
-        std::string test_features_file = out_folder + "/test_features.bin";
-        std::ofstream fout(test_features_file, std::ios::binary);
-        fout.write(reinterpret_cast<const char*>(test_feats.data()), test_feats.size() * sizeof(float));
-        fout.close();
-    }
-    // Test labels
-    {
-        std::string test_labels_file = out_folder + "/test_labels.bin";
-        std::ofstream fout(test_labels_file, std::ios::binary);
-        for (int v : test_labels) {
-            int32_t x = static_cast<int32_t>(v);
-            fout.write(reinterpret_cast<const char*>(&x), sizeof(int32_t));
-        }
-        fout.close();
-    }
-    printf("\n[SUCCESS] GPU phase completed successfully!\n");
-    printf("[INFO] Features saved:\n");
-    printf("  - train_features.bin (%zu samples)\n", train_images.size());
-    printf("  - test_features.bin (%zu samples)\n", test_images.size());
-    printf("  - train_labels.bin\n");
-    printf("  - test_labels.bin\n");
-
     // Cleanup
     delete gpu_model;
 
