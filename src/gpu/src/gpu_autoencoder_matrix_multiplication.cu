@@ -46,7 +46,7 @@ __global__ void conv2d_forward_kernel_tiled(
     int tx = threadIdx.x;
     int ty = threadIdx.y;
 
-    // output position (n mặc định = 0; batch xử lý ngoài block)
+    // output position
     int ow = bx * TILE + tx;
     int oh = by * TILE + ty;
 
@@ -54,8 +54,10 @@ __global__ void conv2d_forward_kernel_tiled(
     __shared__ float tile_in[TILE + 2][TILE + 2];   // tile input có halo 1 pixel
     __shared__ float tile_w[3][3];                  // 3×3 kernel (chung cho block)
 
-    // For simplicity: chạy batch_size = 1 trước (có thể mở rộng sau)
-    int n = 0;
+    // FIX: Decode batch và output channel từ blockIdx.z
+    int n_oc = blockIdx.z;
+    int n = n_oc / out_channels;      // Batch index
+    int oc = n_oc % out_channels;     // Output channel index
 
     float out_val = 0.0f;
 
@@ -63,21 +65,26 @@ __global__ void conv2d_forward_kernel_tiled(
     for (int ic = 0; ic < in_channels; ++ic)
     {
         // ------------------------
-        // 1. Load tile input (có padding)
+        // 1. Load tile input (có padding) - FIX: Load toàn bộ 18x18 tile
         // ------------------------
-        int iy = oh + ty - pad;
-        int ix = ow + tx - pad;
+        // Cooperative load: mỗi thread load nhiều phần tử để fill toàn bộ tile
+        for (int y = ty; y < TILE + 2; y += blockDim.y) {
+            for (int x = tx; x < TILE + 2; x += blockDim.x) {
+                int in_y = by * TILE + y - pad;  // by cho height
+                int in_x = bx * TILE + x - pad;  // bx cho width
 
-        if (iy >= 0 && iy < height && ix >= 0 && ix < width)
-            tile_in[ty][tx] = input[idx4(n, ic, iy, ix, in_channels, height, width)];
-        else
-            tile_in[ty][tx] = 0.0f;
+                if (in_y >= 0 && in_y < height && in_x >= 0 && in_x < width)
+                    tile_in[y][x] = input[idx4(n, ic, in_y, in_x, in_channels, height, width)];
+                else
+                    tile_in[y][x] = 0.0f;
+            }
+        }
 
         // ------------------------
-        // 2. Load kernel 3×3 cho oc (vòng ngoài load oc)
+        // 2. Load kernel 3×3 cho oc
         // ------------------------
         if (ty < 3 && tx < 3) {
-            int w_idx = ((blockIdx.z * in_channels + ic) * 3 + ty) * 3 + tx;
+            int w_idx = ((oc * in_channels + ic) * 3 + ty) * 3 + tx;
             tile_w[ty][tx] = weights[w_idx];
         }
 
@@ -86,6 +93,12 @@ __global__ void conv2d_forward_kernel_tiled(
         // ------------------------
         // 3. Compute 3×3 convolution cho thread (oh, ow)
         // ------------------------
+        // FIX: ty, tx là thread index, cần map sang shared memory position
+        // Shared memory được load với origin tại (0,0) tương ứng tile origin - pad
+        // Thread (ty, tx) tính output tại (oh, ow) = (by*TILE+ty, bx*TILE+tx)
+        // Cần lấy input tại (oh+ky-pad, ow+kx-pad) từ global
+        // Trong shared: (oh+ky-pad) - (by*TILE-pad) = ty+ky
+        //              (ow+kx-pad) - (bx*TILE-pad) = tx+kx
         if (oh < height && ow < width)
         {
             for (int ky = 0; ky < 3; ky++)
@@ -100,8 +113,8 @@ __global__ void conv2d_forward_kernel_tiled(
     // 4. Ghi output
     // ------------------------
     if (oh < height && ow < width) {
-        int out_idx = idx4(n, blockIdx.z, oh, ow, out_channels, height, width);
-        output[out_idx] = out_val + bias[blockIdx.z];
+        int out_idx = idx4(n, oc, oh, ow, out_channels, height, width);
+        output[out_idx] = out_val + bias[oc];
     }
 }
 
@@ -111,11 +124,13 @@ void gpu_conv2d_forward_matrix_multiplication(
     float* d_output, int batch_size, int in_channels, int out_channels,
     int height, int width
 ) {
-    int total_outputs = batch_size * out_channels * height * width;
-    int block_size = 256;
-    int grid_size = (total_outputs + block_size - 1) / block_size;
+    // FIX: Sử dụng 2D block và 3D grid như kernel yêu cầu
+    dim3 block(TILE, TILE);  // 16x16 threads
+    dim3 grid((width + TILE - 1) / TILE,
+              (height + TILE - 1) / TILE,
+              batch_size * out_channels);  // Encode cả batch_size và out_channels
 
-    conv2d_forward_kernel_tiled<<<grid_size, block_size>>>(
+    conv2d_forward_kernel_tiled<<<grid, block>>>(
         dev_input_data, d_weights, d_bias, d_output,
         batch_size, in_channels, out_channels, height, width
     );
@@ -133,53 +148,76 @@ __global__ void conv2d_backward_input_tiled(
     int width
 ) {
     const int pad = 1;
+    constexpr int K = 3;
 
     int tx = threadIdx.x;
     int ty = threadIdx.y;
 
-    int ow = blockIdx.x * TILE + tx;
-    int oh = blockIdx.y * TILE + ty;
+    // Input position this thread computes gradient for
+    int iw = blockIdx.x * TILE + tx;
+    int ih = blockIdx.y * TILE + ty;
 
-    int ic = blockIdx.z;
-    int n = 0;   // batch xử lý ngoài grid
+    // Decode batch và input channel từ blockIdx.z
+    int n_ic = blockIdx.z;
+    int n = n_ic / in_channels;
+    int ic = n_ic % in_channels;
 
-    __shared__ float tile_out[TILE + 2][TILE + 2];
-    __shared__ float tile_w[3][3];
+    __shared__ float sh_dout[(TILE + 2) * (TILE + 2)];
+    __shared__ float sh_w[K * K];
 
     float acc = 0.0f;
 
+    // Loop over output channels
     for (int oc = 0; oc < out_channels; ++oc)
     {
-        // Load rotated kernel into shared memory
-        if (tx < 3 && ty < 3) {
-            int w_idx = ((oc * in_channels + ic) * 3 + (2 - ty)) * 3 + (2 - tx);
-            tile_w[ty][tx] = weights[w_idx];
+        // Cooperative load rotated weights [3x3]
+        if (tx < K && ty < K) {
+            // Flip kernel for transposed convolution
+            int w_idx = ((oc * in_channels + ic) * K + (K-1-ty)) * K + (K-1-tx);
+            sh_w[ty * K + tx] = weights[w_idx];
         }
 
-        // Load dL/doutput tile
-        int oh_in = oh + ty - pad;
-        int ow_in = ow + tx - pad;
+        // Cooperative load dL/doutput tile with padding
+        // For computing grad at input (ih, iw), need output gradients in range
+        // [(ih-pad, iw-pad) to (ih+pad, iw+pad)]
+        int tile_y_start = blockIdx.y * TILE;
+        int tile_x_start = blockIdx.x * TILE;
 
-        if (oh_in >= 0 && oh_in < height &&
-            ow_in >= 0 && ow_in < width)
-            tile_out[ty][tx] = dL_doutput[((n*out_channels + oc)*height + oh_in)*width + ow_in];
-        else
-            tile_out[ty][tx] = 0.0f;
+        for (int y = ty; y < TILE + 2; y += blockDim.y) {
+            for (int x = tx; x < TILE + 2; x += blockDim.x) {
+                int oy = tile_y_start + y - pad;
+                int ox = tile_x_start + x - pad;
+
+                float val = 0.0f;
+                if (oy >= 0 && oy < height && ox >= 0 && ox < width) {
+                    int idx = ((n * out_channels + oc) * height + oy) * width + ox;
+                    val = dL_doutput[idx];
+                }
+                sh_dout[y * (TILE + 2) + x] = val;
+            }
+        }
 
         __syncthreads();
 
-        // Compute contribution
-        if (oh < height && ow < width) {
-            for (int ky = 0; ky < 3; ky++)
-                for (int kx = 0; kx < 3; kx++)
-                    acc += tile_out[ty + ky][tx + kx] * tile_w[ky][kx];
+        // Compute gradient contribution for this output channel
+        if (ih < height && iw < width) {
+            for (int ky = 0; ky < K; ++ky) {
+                for (int kx = 0; kx < K; ++kx) {
+                    int sy = ty + ky;
+                    int sx = tx + kx;
+                    acc += sh_dout[sy * (TILE + 2) + sx] * sh_w[ky * K + kx];
+                }
+            }
         }
 
         __syncthreads();
     }
 
-    if (oh < height && ow < width)
-        dL_dinput[((n*in_channels + ic)*height + oh)*width + ow] = acc;
+    // Write result
+    if (ih < height && iw < width) {
+        int out_idx = ((n * in_channels + ic) * height + ih) * width + iw;
+        dL_dinput[out_idx] = acc;
+    }
 }
 
 
@@ -261,18 +299,20 @@ void gpu_conv2d_backward_matrix_multiplication(
 ) {
     int block_size = 256;
 
-    // dL/dinput
+    // dL/dinput - use OPTIMIZED tiled version
     if (dev_grad_input) {
-        int total_inputs = batch_size * in_channels * height * width;
-        int grid_size_input = (total_inputs + block_size - 1) / block_size;
-        conv2d_backward_input_tiled<<<grid_size_input, block_size>>>(
+        dim3 block(TILE, TILE);
+        dim3 grid((width + TILE - 1) / TILE,
+                  (height + TILE - 1) / TILE,
+                  batch_size * in_channels);
+        conv2d_backward_input_tiled<<<grid, block>>>(
             d_weights, d_dL_doutput, dev_grad_input, batch_size, in_channels,
             out_channels, height, width
         );
         CUDA_CHECK(cudaGetLastError());
     }
 
-    // dL/dweights
+    // dL/dweights - use OPTIMIZED version with loop unrolling
     if (d_dL_dweights) {
         int total_weights = out_channels * in_channels * 3 * 3;
         int grid_size_weights = (total_weights + block_size - 1) / block_size;
@@ -283,7 +323,7 @@ void gpu_conv2d_backward_matrix_multiplication(
         CUDA_CHECK(cudaGetLastError());
     }
 
-    // dL/dbias
+    // dL/dbias - use OPTIMIZED version with loop unrolling
     if (d_dL_dbias) {
         int grid_size_bias = (out_channels + block_size - 1) / block_size;
         conv2d_backward_bias_kernel_mm<<<grid_size_bias, block_size>>>(
@@ -598,11 +638,11 @@ void GPUAutoencoderMatrixMultiplicationOpt::backward_device(const float* d_in, c
 
     // 2. Backward through Conv5: 256->3, 32x32
     gpu_conv2d_backward_matrix_multiplication(dev_dec_upsample2, dev_dec_conv3_w, dev_grad_dec_out,
-                            dev_grad_dec_outdev_grad_dec_upsample2, dev_grad_dec_conv3_w, dev_grad_dec_conv3_b,
+                            dev_grad_dec_upsample2, dev_grad_dec_conv3_w, dev_grad_dec_conv3_b,
                             batch_size, 256, 3, 32, 32);
 
     // 3. Backward through Upsample2: 16x16->32x32
-    gpu_upsample2d_backward_mm(dev_grad_dec_outdev_grad_dec_upsample2, dev_grad_dec_act1,
+    gpu_upsample2d_backward_mm(dev_grad_dec_upsample2, dev_grad_dec_act1,
                                 batch_size, 256, 16, 16);
 
     // 4. Backward through ReLU4
@@ -614,7 +654,8 @@ void GPUAutoencoderMatrixMultiplicationOpt::backward_device(const float* d_in, c
                             batch_size, 128, 256, 16, 16);
 
     // 6. Backward through Upsample1: 8x8->16x16
-    gpu_upsample2d_backward(dev_grad_dec_upsample1, dev_grad_dec_conv1, batch_size, 128, 8, 8);
+    // FIX: Sử dụng optimized version _mm thay vì base version
+    gpu_upsample2d_backward_mm(dev_grad_dec_upsample1, dev_grad_dec_conv1, batch_size, 128, 8, 8);
 
     // 7. Backward through ReLU3
     gpu_relu_backward(dev_dec_conv1_out, dev_grad_dec_conv1, dev_grad_dec_conv1, batch_size * 128 * 8 * 8);

@@ -749,7 +749,7 @@ GPUAutoencoder::GPUAutoencoder() {
     dev_dec_conv1_out = dev_dec_upsample1 = dev_dec_act1 = dev_dec_upsample2 = dev_dec_out = nullptr; // Decoder activations
 
     // Device gradient buffers
-    dev_grad_dec_out = dev_grad_dec_outdev_grad_dec_upsample2 = dev_grad_dec_act1 = dev_grad_dec_upsample1 = nullptr; 
+    dev_grad_dec_out = dev_grad_dec_upsample2 = dev_grad_dec_act1 = dev_grad_dec_upsample1 = nullptr; 
     dev_grad_dec_conv1 = dev_grad_latent = dev_grad_enc_act2 = dev_grad_enc_pool1 = nullptr;
     dev_grad_enc_act1 = dev_grad_input = nullptr;
 
@@ -843,7 +843,7 @@ void GPUAutoencoder::allocate_device_memory(int requested_batch_size) {
     CUDA_CHECK(cudaMalloc(&dev_dec_upsample2, max_batch_size * 256 * 32 * 32 * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&dev_dec_out, max_batch_size * 3 * 32 * 32 * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&dev_grad_dec_out, max_batch_size * 3 * 32 * 32 * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&dev_grad_dec_outdev_grad_dec_upsample2, max_batch_size * 256 * 32 * 32 * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dev_grad_dec_upsample2, max_batch_size * 256 * 32 * 32 * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&dev_grad_dec_act1, max_batch_size * 256 * 16 * 16 * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&dev_grad_dec_upsample1, max_batch_size * 128 * 16 * 16 * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&dev_grad_dec_conv1, max_batch_size * 128 * 8 * 8 * sizeof(float)));
@@ -863,7 +863,7 @@ void GPUAutoencoder::allocate_device_memory(int requested_batch_size) {
 
     // Allocate gradient buffers for backward pass
     CUDA_CHECK(cudaMalloc(&dev_grad_dec_out, max_batch_size * 3 * 32 * 32 * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&dev_grad_dec_outdev_grad_dec_upsample2, max_batch_size * 256 * 32 * 32 * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&dev_grad_dec_upsample2, max_batch_size * 256 * 32 * 32 * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&dev_grad_dec_act1, max_batch_size * 256 * 16 * 16 * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&dev_grad_dec_upsample1, max_batch_size * 128 * 16 * 16 * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&dev_grad_dec_conv1, max_batch_size * 128 * 8 * 8 * sizeof(float)));
@@ -918,7 +918,7 @@ void GPUAutoencoder::free_device_memory() {
 
     // Free gradient buffers
     if (dev_grad_dec_out) cudaFree(dev_grad_dec_out); dev_grad_dec_out = nullptr;
-    if (dev_grad_dec_outdev_grad_dec_upsample2) cudaFree(dev_grad_dec_outdev_grad_dec_upsample2); dev_grad_dec_outdev_grad_dec_upsample2 = nullptr;
+    if (dev_grad_dec_upsample2) cudaFree(dev_grad_dec_upsample2); dev_grad_dec_upsample2 = nullptr;
     if (dev_grad_dec_act1) cudaFree(dev_grad_dec_act1); dev_grad_dec_act1 = nullptr;
     if (dev_grad_dec_upsample1) cudaFree(dev_grad_dec_upsample1); dev_grad_dec_upsample1 = nullptr;
     if (dev_grad_dec_conv1) cudaFree(dev_grad_dec_conv1); dev_grad_dec_conv1 = nullptr;
@@ -1011,13 +1011,13 @@ void GPUAutoencoder::backward_device(const float* d_in, const float* d_tgt, int 
     gpu_mse_loss_gradient(dev_dec_out, d_tgt, dev_grad_dec_out, output_size);
 
     // 2. Backward through Conv5: 256->3, 32x32
-    // dev_grad_input cho Conv5 là dev_grad_dec_outdev_grad_dec_upsample2
-    gpu_conv2d_backward(dev_dec_upsample2, dev_dec_conv3_w, dev_grad_dec_out, dev_grad_dec_outdev_grad_dec_upsample2, dev_grad_dec_conv3_w, dev_grad_dec_conv3_b,
+    // dev_grad_input cho Conv5 là dev_grad_dec_upsample2
+    gpu_conv2d_backward(dev_dec_upsample2, dev_dec_conv3_w, dev_grad_dec_out, dev_grad_dec_upsample2, dev_grad_dec_conv3_w, dev_grad_dec_conv3_b,
                         batch_size, 256, 3, 32, 32);
 
     // 3. Backward through Upsample2: 16x16->32x32
     // dev_grad_input cho Upsample2 là dev_grad_dec_act1
-    gpu_upsample2d_backward(dev_grad_dec_outdev_grad_dec_upsample2, dev_grad_dec_act1, batch_size, 256, 16, 16);
+    gpu_upsample2d_backward(dev_grad_dec_upsample2, dev_grad_dec_act1, batch_size, 256, 16, 16);
 
     // 4. Backward through ReLU4
     gpu_relu_backward(dev_dec_act1, dev_grad_dec_act1, dev_grad_dec_act1, batch_size * 256 * 16 * 16);

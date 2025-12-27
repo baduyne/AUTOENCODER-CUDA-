@@ -740,11 +740,11 @@ void GPUAutoencoderLoopOpt::backward_device(const float* d_in, const float* d_tg
 
     // 2. Backward through Conv5: 256->3, 32x32
     gpu_conv2d_backward_opt(dev_dec_upsample2, dev_dec_conv3_w, dev_grad_dec_out,
-                            dev_grad_dec_outdev_grad_dec_upsample2, dev_grad_dec_conv3_w, dev_grad_dec_conv3_b,
+                            dev_grad_dec_upsample2, dev_grad_dec_conv3_w, dev_grad_dec_conv3_b,
                             batch_size, 256, 3, 32, 32);
 
     // 3. Backward through Upsample2: 16x16->32x32
-    gpu_upsample2d_backward_opt(dev_grad_dec_outdev_grad_dec_upsample2, dev_grad_dec_act1,
+    gpu_upsample2d_backward_opt(dev_grad_dec_upsample2, dev_grad_dec_act1,
                                 batch_size, 256, 16, 16);
 
     // 4. Backward through ReLU4

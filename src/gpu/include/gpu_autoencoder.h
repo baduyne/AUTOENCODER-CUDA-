@@ -69,7 +69,7 @@ protected:
     // ======================
     // Device Backprop Buffers
     // ======================
-    float *dev_grad_dec_out, *dev_grad_dec_outdev_grad_dec_upsample2, *dev_grad_dec_act1, *dev_grad_dec_upsample1;
+    float *dev_grad_dec_out, *dev_grad_dec_upsample2, *dev_grad_dec_act1, *dev_grad_dec_upsample1;
     float *dev_grad_dec_conv1, *dev_grad_latent, *dev_grad_enc_act2, *dev_grad_enc_pool1;
     float *dev_grad_enc_act1, *dev_grad_input;
 
