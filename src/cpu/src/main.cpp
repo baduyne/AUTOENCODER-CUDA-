@@ -23,19 +23,34 @@ int cpu_phase_main(int argc, char** argv) {
 
     pipeline.train_autoencoder(num_epochs, batch_size, learning_rate, ae_save_path);
 
-    // ===== Phase 2: Extract latent features =====
-    // TODO: Implement extract_features trong TrainingPipelineCPU
-    // (có thể chạy ở run khác, chỉ cần load lại AE)
-    // pipeline.load_autoencoder(ae_save_path);
-    //
-    // std::vector<std::vector<double>> train_features;
-    // std::vector<int>                 train_labels;
-    // std::vector<std::vector<double>> test_features;
-    // std::vector<int>                 test_labels;
-    //
-    // pipeline.extract_features(/*train=*/true,  batch_size, train_features, train_labels);
-    // pipeline.extract_features(/*train=*/false, batch_size, test_features,  test_labels);
-    //
+    // ===== Phase 2: Extract latent features and save to binary files =====
+    pipeline.load_autoencoder(ae_save_path);
+
+    // Extract and save train features (500 samples)
+    pipeline.extract_and_save_features(
+        /*train=*/true,
+        batch_size,
+        /*max_samples=*/500,
+        "cpu_train_features.bin",
+        "cpu_train_labels.bin"
+    );
+
+    // Extract and save test features (100 samples)
+    pipeline.extract_and_save_features(
+        /*train=*/false,
+        batch_size,
+        /*max_samples=*/100,
+        "cpu_test_features.bin",
+        "cpu_test_labels.bin"
+    );
+
+    std::cout << "\n[SUCCESS] CPU phase completed successfully!" << std::endl;
+    std::cout << "[INFO] Features saved:" << std::endl;
+    std::cout << "  - cpu_train_features.bin (500 samples)" << std::endl;
+    std::cout << "  - cpu_test_features.bin (100 samples)" << std::endl;
+    std::cout << "  - cpu_train_labels.bin" << std::endl;
+    std::cout << "  - cpu_test_labels.bin" << std::endl;
+
     // // ===== Phase 3: Train SVM trên train_features =====
     // dl::SVMTrainer::Config svm_cfg;
     // svm_cfg.C      = 10.0;  // theo yêu cầu
